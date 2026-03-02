@@ -1,0 +1,31 @@
+{
+  "name": "whatsapp-mcp-server",
+  "version": "1.0.0",
+  "description": "WhatsApp/Signal Group Chat Intelligence — MCP server + analysis pipeline",
+  "type": "module",
+  "main": "dist/mcp-server/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/mcp-server/index.ts",
+    "mcp:start": "tsx src/mcp-server/index.ts",
+    "mcp:http": "tsx src/mcp-server/http-server.ts",
+    "tunnel": "cloudflared tunnel --url http://localhost:3847",
+    "test": "vitest run",
+    "watch": "tsx scripts/watch-exports.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "date-fns": "^3.6.0",
+    "puppeteer": "^22.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.25.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/qrcode-terminal": "^0.12.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0"
+  }
+}

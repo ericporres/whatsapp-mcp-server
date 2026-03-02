@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent for WhatsApp MCP HTTP server.
+  Copy to ~/Library/LaunchAgents/ and replace placeholders:
+    __HOME__     → your home directory (e.g. /Users/yourname)
+    __PROJECT__  → absolute path to this project
+    __SESSION__  → your WhatsApp session name
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yourname.whatsapp-mcp</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.nvm/versions/node/v22.15.0/bin/node</string>
+    <string>__PROJECT__/dist/mcp-server/http-server.js</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__HOME__/.nvm/versions/node/v22.15.0/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>WHATSAPP_SESSION_NAME</key>
+    <string>__SESSION__</string>
+    <key>MCP_HTTP_PORT</key>
+    <string>3847</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/whatsapp-mcp.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/whatsapp-mcp.stderr.log</string>
+</dict>
+</plist>

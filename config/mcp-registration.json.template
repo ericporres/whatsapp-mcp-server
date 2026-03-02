@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "node",
+      "args": ["__PROJECT__/dist/mcp-server/index.js"]
+    }
+  }
+}

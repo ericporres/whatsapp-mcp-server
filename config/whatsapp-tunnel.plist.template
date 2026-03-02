@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent for Cloudflare tunnel → WhatsApp MCP HTTP server.
+  Copy to ~/Library/LaunchAgents/ and replace placeholders:
+    __HOME__          → your home directory
+    __TUNNEL_TOKEN__  → your cloudflared tunnel token (from `cloudflared tunnel create`)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.yourname.whatsapp-tunnel</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>tunnel</string>
+    <string>run</string>
+    <string>--token</string>
+    <string>__TUNNEL_TOKEN__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/whatsapp-tunnel.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/whatsapp-tunnel.stderr.log</string>
+</dict>
+</plist>

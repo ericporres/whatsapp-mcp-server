@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.wwebjs_auth/
+.wwebjs_cache/
+exports/*.txt
+exports/briefings/
+.env
+*.tsbuildinfo
+.DS_Store
+
+# Persistence
+certs/
+config/com.ericporres.whatsapp-tunnel.plist
