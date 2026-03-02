@@ -122,6 +122,30 @@ cloudflared tunnel --url http://localhost:3847
 cloudflared tunnel run your-tunnel-name
 ```
 
+### Securing the Tunnel
+
+The server runs locally — your machine, your data, your authenticated WhatsApp session. But exposing it via a Cloudflare tunnel creates a public HTTPS endpoint. You should lock it down.
+
+**Security tiers** (pick your comfort level):
+
+| Tier | What It Does | Effort |
+|------|-------------|--------|
+| **Obscurity** (default) | Long random subdomain — `mcp-random-words-123.yourdomain.com` | Zero — automatic |
+| **IP Restriction** (recommended) | Cloudflare Access policy allows only your IP | 5 min in [Zero Trust dashboard](https://one.dash.cloudflare.com/) |
+| **Bearer Token** | Server validates `Authorization` header on every request | ~20 lines in `http-server.ts` |
+| **Email OTP** | Cloudflare Access sends a one-time code to your email | 10 min in Zero Trust dashboard |
+| **OAuth/OIDC** | Full identity provider integration (Google, Okta, etc.) | 30 min — identity provider config |
+
+**Minimum recommendation:** Obscurity + IP Restriction. The random subdomain makes the endpoint undiscoverable. IP whitelisting via Cloudflare Access ensures that even if someone guesses the URL, traffic from unauthorized IPs gets rejected at Cloudflare's edge — it never reaches your tunnel.
+
+To set up IP restriction:
+1. Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → Access controls → Applications
+2. Add a Self-Hosted application for your tunnel hostname
+3. Create a policy: Include → IP Ranges → your public IP (e.g., `203.0.113.42/32`)
+4. Save — unauthorized IPs are now blocked at Cloudflare's edge
+
+For bearer token authentication, set `MCP_AUTH_TOKEN` in your environment and the HTTP server will validate the `Authorization: Bearer <token>` header on every request. See `http-server.ts` for implementation.
+
 ### macOS Persistence (LaunchAgents)
 
 For always-on operation — server starts at login, tunnel reconnects automatically, logs to `~/Library/Logs/`:
