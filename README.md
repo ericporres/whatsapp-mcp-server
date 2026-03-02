@@ -32,7 +32,7 @@ All tools support **fuzzy group name matching** — say "Book Club" and it finds
 - **Notable quotes** — standout lines worth saving or citing
 - **Cross-group synthesis** — amplified signals, network nodes, compounding opportunities that only appear when you look across groups
 
-The intelligence processor was inspired by [Scott Walker](https://www.upshiftcollective.com/) (Founder & CEO, UpShift Collective), who built the [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/) — a Claude skill he shared with our professional group that demonstrated the value of structured analysis over raw message consumption. His six-output framework (themes, big ideas, opportunities, participation analysis, live threads, notable quotes) proved the concept. This implementation extends it into a real-time MCP server with multi-group synthesis and configurable professional context.
+The intelligence processor was inspired by [Scott Walker](https://github.com/Scottywalks22) (Founder & CEO, [UpShift Collective](https://www.upshiftcollective.com/)), who built the [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/) — a Claude skill he shared with our professional group that demonstrated the value of structured analysis over raw message consumption. His six-output framework (themes, big ideas, opportunities, participation analysis, live threads, notable quotes) proved the concept. This implementation extends it into a real-time MCP server with multi-group synthesis and configurable professional context.
 
 ---
 
@@ -231,7 +231,7 @@ plugin/                   # Cowork slash command plugin
 
 ## Acknowledgments
 
-The chat intelligence processor was inspired by **Scott Walker** (Founder & CEO, [UpShift Collective](https://www.upshiftcollective.com/)), who built the [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/) — a Claude skill that transforms WhatsApp group exports into structured intelligence briefings. Scott shared it as a gift to our professional group, and the six-output framework (themes, big ideas, opportunities, participation analysis, live threads, notable quotes) proved the concept: structured analysis of group conversations surfaces signal that passive consumption misses entirely. This project extends that framework into a real-time MCP server with multi-group synthesis and configurable professional context.
+The chat intelligence processor was inspired by **[Scott Walker](https://github.com/Scottywalks22)** (Founder & CEO, [UpShift Collective](https://www.upshiftcollective.com/)), who built the [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/) — a Claude skill that transforms WhatsApp group exports into structured intelligence briefings. Scott shared it as a gift to our professional group, and the six-output framework (themes, big ideas, opportunities, participation analysis, live threads, notable quotes) proved the concept: structured analysis of group conversations surfaces signal that passive consumption misses entirely. This project extends that framework into a real-time MCP server with multi-group synthesis and configurable professional context.
 
 Built with [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js), the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), and [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
