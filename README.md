@@ -1,6 +1,40 @@
 # WhatsApp MCP Server
 
-An MCP (Model Context Protocol) server that exposes WhatsApp group chats to Claude and other MCP-compatible AI assistants. Includes a chat intelligence processor that extracts themes, ideas, opportunities, and actionable insights from group conversations.
+**Your WhatsApp groups are a live intelligence network. This server lets Claude read them.**
+
+An open-source [MCP](https://modelcontextprotocol.io) server that connects WhatsApp group chats to Claude (and any MCP-compatible AI client). It exposes five tools for reading, searching, and exporting group conversations — plus a chat intelligence processor that extracts themes, opportunities, and actionable briefings from hundreds of messages.
+
+I built this because I'm in a dozen professional WhatsApp groups — practitioners, investors, founders — where the information density is remarkable and the retrieval rate is abysmal. WhatsApp is optimized for *conversation*, not *comprehension*. This server fixes that.
+
+---
+
+## What It Does
+
+**Five MCP tools** give Claude (or any MCP client) structured access to your WhatsApp groups:
+
+| Tool | What It Does |
+|------|-------------|
+| `whatsapp_list_groups` | Every group you belong to, sorted by recent activity |
+| `whatsapp_get_messages` | Pull messages from any group with date range filtering |
+| `whatsapp_group_info` | Metadata, participants, descriptions |
+| `whatsapp_search_messages` | Keyword search across all groups or scoped to one |
+| `whatsapp_export_chat` | Full export in WhatsApp's native `.txt` format |
+
+All tools support **fuzzy group name matching** — say "Book Club" and it finds "Book Club — Monthly Reads" using Levenshtein distance + substring matching. Nobody remembers exact group names. The system shouldn't require you to.
+
+**A chat intelligence processor** turns raw messages into structured briefings:
+
+- **Themes** — recurring topics tagged as hot, important, or emerging
+- **Big ideas** — intellectually interesting or actionable, flagged by relevance to your work
+- **Opportunities** — collaboration, speaking, partnerships, content ideas, business leads
+- **Participation analysis** — what you engage with vs. skip, where you're visible vs. silent
+- **Live threads** — active conversations worth jumping into, with suggested messages
+- **Notable quotes** — standout lines worth saving or citing
+- **Cross-group synthesis** — amplified signals, network nodes, compounding opportunities that only appear when you look across groups
+
+The intelligence processor was inspired by [Scott Walker's Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/), which demonstrated the value of structured analysis over raw message consumption. This implementation extends that concept with MCP integration, multi-group synthesis, and configurable professional context.
+
+---
 
 ## Architecture
 
@@ -18,57 +52,37 @@ An MCP (Model Context Protocol) server that exposes WhatsApp group chats to Clau
 Two transport modes, one WhatsApp client:
 
 - **Claude Code** → stdio transport (`index.ts`) — direct pipe, single session
-- **Cowork / Desktop** → StreamableHTTP transport (`http-server.ts`) — multi-session via Cloudflare tunnel
+- **Cowork / Desktop** → StreamableHTTP transport (`http-server.ts`) — multi-session over HTTPS via Cloudflare tunnel
 
-The WhatsApp client uses `whatsapp-web.js` (Puppeteer-based) with an `AsyncMutex` to serialize all API calls. Puppeteer's single-threaded browser will crash on concurrent `page.evaluate()` calls, so the mutex enforces FIFO ordering with a 2-second minimum interval between operations.
+WhatsApp has no API for group chats. There's the Business API (customer messaging only) and WhatsApp Web (a browser session authenticated by QR code). So the server uses [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) — Puppeteer driving a headless Chromium instance that maintains a persistent authenticated session, just like your browser tab does.
 
-## MCP Tools
+This creates a single-threaded bottleneck. One browser, one page context, multiple MCP sessions potentially requesting data simultaneously. The solution is an **AsyncMutex** — a FIFO queue with a 2-second minimum interval between operations. Every WhatsApp interaction goes through the mutex. No race conditions, no page state corruption, no rate-limit triggers. It's not glamorous. It's load-bearing.
 
-| Tool | Description |
-|------|-------------|
-| `whatsapp_list_groups` | List all groups (sorted by activity) |
-| `whatsapp_get_messages` | Get messages from a group (with date filters) |
-| `whatsapp_export_chat` | Export conversation as WhatsApp-format .txt |
-| `whatsapp_search_messages` | Search across groups by keyword |
-| `whatsapp_group_info` | Group metadata, participants, description |
-
-All tools support fuzzy group name matching — you can say "Book Club" instead of the exact group name.
-
-## Chat Intelligence Processor
-
-Beyond raw message access, the processor pipeline analyzes conversations to extract:
-
-- **Themes** — recurring topics with recurrence tagging (hot / important / emerging)
-- **Big ideas** — intellectually interesting or actionable ideas, flagged by relevance
-- **Opportunities** — collaboration, business leads, speaking, networking, content ideas
-- **Participation analysis** — how active you are, topics you engage vs. skip
-- **Live threads** — active conversations worth jumping into, with suggested messages
-- **Notable quotes** — standout lines worth saving
-- **Cross-group synthesis** — amplified signals, network nodes, compounding opportunities
-
-Customize the `EXAMPLE_CONTEXT` in `src/processor/analyzer.ts` with your professional context.
+---
 
 ## Setup
 
 ### Prerequisites
 
 - Node.js 22+
-- A WhatsApp account (will authenticate via QR code on first run)
+- A WhatsApp account (authenticates via QR code on first run)
 
 ### Install and Build
 
 ```bash
+git clone https://github.com/ericporres/whatsapp-mcp-server.git
+cd whatsapp-mcp-server
 npm install
 npm run build
 ```
 
-### First Run (QR Authentication)
+### First Run — QR Authentication
 
 ```bash
-WHATSAPP_SESSION_NAME=my-session node dist/mcp-server/index.ts
+WHATSAPP_SESSION_NAME=my-session node dist/mcp-server/index.js
 ```
 
-Scan the QR code with WhatsApp on your phone. Session credentials are cached in `.wwebjs_auth/` for subsequent runs.
+Scan the QR code with WhatsApp on your phone. Session credentials cache in `.wwebjs_auth/` — you won't need to scan again unless you revoke the session.
 
 ### Register with Claude Code
 
@@ -79,43 +93,84 @@ Add to `~/.claude.json`:
   "mcpServers": {
     "whatsapp": {
       "command": "node",
-      "args": ["/path/to/whatsapp-mcp-server/dist/mcp-server/index.js"]
+      "args": ["/path/to/whatsapp-mcp-server/dist/mcp-server/index.js"],
+      "env": {
+        "WHATSAPP_SESSION_NAME": "my-session"
+      }
     }
   }
 }
 ```
 
-### HTTP Server for Cowork (Desktop App)
+Then ask Claude: *"What WhatsApp groups am I in?"*
 
-The HTTP server supports multiple concurrent MCP sessions, each getting a fresh Server + Transport pair while sharing the single WhatsApp client.
+### HTTP Server (Cowork / Remote Access)
+
+The HTTP server supports multiple concurrent MCP sessions. Each `initialize` handshake spawns a fresh Server + Transport pair. All sessions share the single WhatsApp client (protected by the mutex). Sessions are tracked in a `Map<string, McpSession>` with 30-minute TTL and automatic cleanup.
 
 ```bash
 MCP_HTTP_PORT=3847 node dist/mcp-server/http-server.js
 ```
 
-Expose via Cloudflare tunnel for HTTPS access:
+Expose over HTTPS with a Cloudflare tunnel:
 
 ```bash
+# Quick tunnel (temporary URL)
 cloudflared tunnel --url http://localhost:3847
+
+# Named tunnel (stable URL — recommended for persistent setups)
+cloudflared tunnel run your-tunnel-name
 ```
 
-Or use a named tunnel for a stable URL (recommended for persistent setups).
+### macOS Persistence (LaunchAgents)
 
-### macOS LaunchAgents (Persistent)
-
-For always-on operation, use the provided setup script:
+For always-on operation — server starts at login, tunnel reconnects automatically, logs to `~/Library/Logs/`:
 
 ```bash
-# Edit variables in the script first
+# Edit the variables at the top of the script first
 chmod +x scripts/setup-persistence.sh
 ./scripts/setup-persistence.sh
 ```
 
-This creates LaunchAgents that start the MCP server (and optionally the tunnel) at login.
+Templates for the LaunchAgent plists are in `config/`. The script substitutes your paths and loads them.
+
+---
+
+## Configuring the Intelligence Processor
+
+The processor ships with a generic `EXAMPLE_CONTEXT` in `src/processor/analyzer.ts`. Replace it with your own professional context:
+
+```typescript
+export const EXAMPLE_CONTEXT: UserContext = {
+  name: 'Your Name',
+  aliases: ['YourName', 'yourname'],
+  role: 'Your role and company',
+  focusAreas: [
+    'your focus area 1',
+    'your focus area 2',
+    'your product or platform',
+  ],
+  opportunityTypes: [
+    'partnerships',
+    'speaking',
+    'pain points your product solves',
+    'content ideas',
+  ],
+  contentOutlets: ['Your Newsletter', 'LinkedIn'],
+};
+```
+
+This context is the difference between generic summaries and personalized intelligence. The analyzer uses it to flag opportunities that map to your work, assess your participation patterns, and surface cross-group signals that matter to *you specifically*.
+
+Rebuild after editing: `npm run build`
+
+---
 
 ## Cowork Plugin
 
-The `plugin/` directory contains a Claude Desktop plugin with a `/whatsapp` slash command that triggers the full intelligence briefing workflow.
+The `plugin/` directory contains a Claude Desktop (Cowork) plugin with a `/whatsapp` slash command. It triggers the full intelligence pipeline: pull messages from your configured groups, run the analyzer, generate a structured briefing. Say "check my WhatsApp" and get the five things that actually matter.
+
+---
 
 ## Project Structure
 
@@ -123,27 +178,43 @@ The `plugin/` directory contains a Claude Desktop plugin with a `/whatsapp` slas
 src/
 ├── mcp-server/
 │   ├── index.ts          # Stdio transport (Claude Code)
-│   ├── http-server.ts    # HTTP transport (Cowork + tunnel)
-│   ├── tools.ts          # MCP tool registration + fuzzy matching
+│   ├── http-server.ts    # StreamableHTTP transport (Cowork + tunnel)
+│   ├── tools.ts          # MCP tool definitions + fuzzy group matching
 │   ├── types.ts          # Zod schemas for tool inputs
 │   └── whatsapp.ts       # WhatsApp client wrapper + AsyncMutex
 └── processor/
     ├── parser.ts         # Multi-format chat parser
-    ├── analyzer.ts       # Theme, idea, opportunity extraction
+    ├── analyzer.ts       # Theme/idea/opportunity extraction (← customize this)
     └── briefing.ts       # Formatted intelligence briefing output
-config/                   # LaunchAgent templates
+config/                   # LaunchAgent plist templates
 scripts/                  # Setup automation
 plugin/                   # Cowork slash command plugin
 ```
 
-## Key Design Decisions
+---
 
-**AsyncMutex over rate limiting.** Puppeteer is single-threaded — concurrent `page.evaluate()` calls don't just slow down, they crash. The mutex serializes all WhatsApp API calls through a FIFO queue with a 2-second minimum interval, preventing both concurrency crashes and rate limit hits.
+## Design Decisions
 
-**Multi-session HTTP server.** Each Cowork `initialize` handshake creates a fresh MCP Server + Transport pair. Sessions are tracked in a `Map<string, McpSession>` with 30-minute TTL cleanup. All sessions share the single WhatsApp client (already protected by the mutex).
+**AsyncMutex over rate limiting.** Puppeteer's single-threaded browser doesn't degrade gracefully under concurrent `page.evaluate()` calls — it crashes. The mutex serializes all WhatsApp API calls through a FIFO queue with a 2-second minimum interval. This prevents concurrency crashes *and* WhatsApp rate-limit triggers. Every tool call, every message fetch, every search goes through the same queue.
 
-**Fuzzy group name matching.** Uses Levenshtein distance + substring matching so you can refer to groups naturally ("Book Club" finds "Book Club - Monthly Reads").
+**Multi-session HTTP server.** The StreamableHTTP transport generates unique session IDs. Each Cowork `initialize` creates a fresh MCP Server + Transport pair. All sessions share the single WhatsApp client (already protected by the mutex). The `Map<string, McpSession>` tracks active sessions with 30-minute TTL — stale sessions are cleaned up automatically.
+
+**Fuzzy group name matching.** Levenshtein distance + substring matching, case-insensitive. "book club" finds "Book Club — Monthly Reads." This is a small detail that makes the difference between a system you use daily and one you abandon after a week.
+
+**Context > Intelligence.** The gap between a chatbot and a useful assistant is almost never a smarter model — it's better context. The `EXAMPLE_CONTEXT` object is a few lines of configuration that transforms the analyzer from generic summarization to personalized intelligence. A well-informed current model beats a brilliant amnesiac every time.
+
+---
+
+## Acknowledgments
+
+The chat intelligence processor was inspired by **Scott Walker**'s [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/), which demonstrated that structured analysis of group conversations surfaces signal that raw message consumption misses. This project extends that concept into an MCP-native pipeline with multi-group synthesis and configurable professional context.
+
+Built with [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js), the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), and [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
+
+---
 
 ## License
 
-MIT
+MIT — clone it, fork it, make it yours.
+
+If you build something interesting on top of it, I'd like to hear about it: [github@porres.com](mailto:github@porres.com) or [@eporres on LinkedIn](https://www.linkedin.com/in/eporres/).
