@@ -128,23 +128,21 @@ The server runs locally — your machine, your data, your authenticated WhatsApp
 
 **Security tiers** (pick your comfort level):
 
-| Tier | What It Does | Effort |
-|------|-------------|--------|
-| **Obscurity** (default) | Long random subdomain — `mcp-random-words-123.yourdomain.com` | Zero — automatic |
-| **IP Restriction** (recommended) | Cloudflare Access policy allows only your IP | 5 min in [Zero Trust dashboard](https://one.dash.cloudflare.com/) |
-| **Bearer Token** | Server validates `Authorization` header on every request | ~20 lines in `http-server.ts` |
-| **Email OTP** | Cloudflare Access sends a one-time code to your email | 10 min in Zero Trust dashboard |
-| **OAuth/OIDC** | Full identity provider integration (Google, Okta, etc.) | 30 min — identity provider config |
+| Tier | What It Does | Effort | Notes |
+|------|-------------|--------|-------|
+| **Obscurity** (default) | Long random subdomain — `mcp-random-words-123.yourdomain.com` | Zero — automatic | Treat the URL like a password |
+| **IP Restriction** | Cloudflare Access policy allows only your IP | 5 min in [Zero Trust dashboard](https://one.dash.cloudflare.com/) | **See caveat below** |
+| **Bearer Token** | Server validates `Authorization` header on every request | ~20 lines in `http-server.ts` | Requires client support for custom headers |
+| **Email OTP** | Cloudflare Access sends a one-time code to your email | 10 min in Zero Trust dashboard | Works if your client handles browser auth flows |
+| **OAuth/OIDC** (recommended for remote) | Full identity provider integration (Google, Okta, etc.) | 30 min — identity provider config | Best option for cloud-hosted MCP clients |
 
-**Minimum recommendation:** Obscurity + IP Restriction. The random subdomain makes the endpoint undiscoverable. IP whitelisting via Cloudflare Access ensures that even if someone guesses the URL, traffic from unauthorized IPs gets rejected at Cloudflare's edge — it never reaches your tunnel.
+> **Important caveat about IP restriction:** Cloudflare Access IP whitelisting works well for clients that connect from your local machine (like Claude Code via stdio). However, cloud-hosted MCP clients — including Claude Cowork, and potentially other platforms that proxy MCP connections through their own infrastructure — connect from the *platform's* IP addresses, not yours. An IP whitelist locked to your home network will block these clients. I learned this the hard way: the tunnel was healthy, the server was running, and Cloudflare was dutifully rejecting every legitimate request from the desktop app I built this for.
 
-To set up IP restriction:
-1. Go to [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → Access controls → Applications
-2. Add a Self-Hosted application for your tunnel hostname
-3. Create a policy: Include → IP Ranges → your public IP (e.g., `203.0.113.42/32`)
-4. Save — unauthorized IPs are now blocked at Cloudflare's edge
+**For local-only access (Claude Code, stdio):** Obscurity alone is sufficient — the tunnel isn't even needed since stdio is a direct pipe.
 
-For bearer token authentication, set `MCP_AUTH_TOKEN` in your environment and the HTTP server will validate the `Authorization: Bearer <token>` header on every request. See `http-server.ts` for implementation.
+**For remote access (Cowork, Cursor, HTTP clients):** Obscurity is the practical baseline today. The random subdomain is effectively unguessable, and your tunnel URL should never appear in public repos, articles, or documentation. For stronger security, **OAuth/OIDC is the recommended path** — it's the only auth mechanism that both Cloudflare Access and cloud-hosted MCP clients (like Cowork's custom connector) natively support. Bearer tokens require custom HTTP headers, which not all MCP client UIs expose.
+
+For bearer token authentication, set `MCP_AUTH_TOKEN` in your environment and the HTTP server will validate the `Authorization: Bearer <token>` header on every request. See `http-server.ts` for implementation. Note: this requires your MCP client to support custom request headers.
 
 ### macOS Persistence (LaunchAgents)
 
