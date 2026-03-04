@@ -222,13 +222,26 @@ export class WhatsAppClient {
       const { limit = 200, after, before } = options;
       const chat = await this.getChatById(groupId);
 
-      const fetchCount = Math.min(limit * 2, 500);
-      const rawMessages: Message[] = await chat.fetchMessages({ limit: fetchCount });
+      // Cap at 300 — Puppeteer is unreliable when scrolling through 400+ messages
+      // in high-volume groups. fetchCount > limit allows room for date filtering.
+      const fetchCount = Math.min(limit * 2, 300);
+      log('info', `getGroupMessages: fetching ${fetchCount} raw messages from WhatsApp Web...`);
+
+      let rawMessages: Message[];
+      try {
+        rawMessages = await chat.fetchMessages({ limit: fetchCount });
+        log('info', `getGroupMessages: got ${rawMessages.length} raw messages`);
+      } catch (fetchErr) {
+        log('error', `getGroupMessages: fetchMessages crashed (limit=${fetchCount})`, fetchErr);
+        throw fetchErr;
+      }
 
       let filtered = rawMessages;
 
       if (after !== undefined) {
+        const beforeFilterCount = filtered.length;
         filtered = filtered.filter((m) => m.timestamp >= after);
+        log('info', `getGroupMessages: afterDate filter kept ${filtered.length}/${beforeFilterCount}`);
       }
       if (before !== undefined) {
         filtered = filtered.filter((m) => m.timestamp <= before);

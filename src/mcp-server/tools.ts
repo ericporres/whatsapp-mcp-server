@@ -211,6 +211,10 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
+    // Retry helper — one automatic retry on transient errors (Puppeteer crashes,
+    // WhatsApp Web flakiness). Waits 3s before retry to let the browser stabilize.
+    const MAX_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       switch (name) {
         case 'whatsapp_list_groups': {
@@ -345,10 +349,19 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (attempt < MAX_ATTEMPTS) {
+        // Log and retry after a short delay
+        process.stderr.write(
+          `[${new Date().toISOString()}] [tools] ${name} attempt ${attempt} failed: ${message} — retrying in 3s...\n`,
+        );
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
       return {
         content: [{ type: 'text' as const, text: `Error executing ${name}: ${message}` }],
         isError: true,
       };
     }
+    } // end retry loop
   });
 }
