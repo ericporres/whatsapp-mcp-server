@@ -219,6 +219,10 @@ plugin/                   # Cowork slash command plugin
 
 **AsyncMutex over rate limiting.** Puppeteer's single-threaded browser doesn't degrade gracefully under concurrent `page.evaluate()` calls — it crashes. The mutex serializes all WhatsApp API calls through a FIFO queue with a 2-second minimum interval. This prevents concurrency crashes *and* WhatsApp rate-limit triggers. Every tool call, every message fetch, every search goes through the same queue.
 
+**Fetch cap at 300 messages.** `chat.fetchMessages({limit: N})` scrolls through WhatsApp Web's DOM to load messages. At 400+ messages on high-volume groups, the headless browser becomes unreliable — Puppeteer's page context destabilizes and calls start returning 500s. The server caps every fetch at 300 regardless of what the client requests, then applies date filtering client-side. This trades theoretical completeness for practical reliability.
+
+**Automatic retry on transient errors.** Despite the mutex, WhatsApp Web is a browser session — flaky by nature. The tool handler wraps every operation in a retry loop: one automatic retry after a 3-second delay. Most transient failures (Puppeteer page crashes, stale DOM references, brief network hiccups) resolve on the second attempt. The delay gives the browser time to stabilize before retrying.
+
 **Multi-session HTTP server.** The StreamableHTTP transport generates unique session IDs. Each Cowork `initialize` creates a fresh MCP Server + Transport pair. All sessions share the single WhatsApp client (already protected by the mutex). The `Map<string, McpSession>` tracks active sessions with 30-minute TTL — stale sessions are cleaned up automatically.
 
 **Fuzzy group name matching.** Levenshtein distance + substring matching, case-insensitive. "book club" finds "Book Club — Monthly Reads." This is a small detail that makes the difference between a system you use daily and one you abandon after a week.
