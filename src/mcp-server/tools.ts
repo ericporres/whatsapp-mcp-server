@@ -363,5 +363,12 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       };
     }
     } // end retry loop
+
+    // Unreachable — every path inside the loop returns or continues — but
+    // TypeScript can't prove it, so we satisfy the return type here.
+    return {
+      content: [{ type: 'text' as const, text: `Error executing ${name}: max retries exceeded` }],
+      isError: true as const,
+    };
   });
 }
