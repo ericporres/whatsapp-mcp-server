@@ -308,7 +308,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
               const quote = m.quotedMsg
                 ? `\n   > ${m.quotedMsg.author}: ${m.quotedMsg.body.slice(0, 60)}`
                 : '';
-              return `[${date}] ${m.authorName}${media}${fwd}: ${m.body}${quote}`;
+              return `[${date}] [id:${m.id}] ${m.authorName}${media}${fwd}: ${m.body}${quote}`;
             })
             .join('\n');
 
@@ -345,7 +345,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           const formatted = limited
             .map((m) => {
               const date = new Date(m.timestamp * 1000).toISOString();
-              return `[${date}] ${m.authorName}: ${m.body}`;
+              return `[${date}] [id:${m.id}] ${m.authorName}: ${m.body}`;
             })
             .join('\n');
 
