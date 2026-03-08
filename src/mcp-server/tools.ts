@@ -9,6 +9,8 @@ import {
   ExportChatInputSchema,
   SearchMessagesInputSchema,
   GroupInfoInputSchema,
+  SendMessageInputSchema,
+  ReplyToMessageInputSchema,
   type WhatsAppGroup,
 } from './types.js';
 
@@ -205,6 +207,48 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           required: ['groupName'],
         },
       },
+      {
+        name: 'whatsapp_send_message',
+        description:
+          'Send a message to a WhatsApp group.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            groupName: {
+              type: 'string',
+              description: 'Name of the group (fuzzy-matched)',
+            },
+            message: {
+              type: 'string',
+              description: 'Message text to send',
+            },
+          },
+          required: ['groupName', 'message'],
+        },
+      },
+      {
+        name: 'whatsapp_reply_to_message',
+        description:
+          'Reply to a specific message in a WhatsApp group. The reply will be shown as a quoted reply.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            groupName: {
+              type: 'string',
+              description: 'Name of the group (fuzzy-matched)',
+            },
+            messageId: {
+              type: 'string',
+              description: 'The ID of the message to reply to (from whatsapp_get_messages)',
+            },
+            message: {
+              type: 'string',
+              description: 'Reply text to send',
+            },
+          },
+          required: ['groupName', 'messageId', 'message'],
+        },
+      },
     ],
   }));
 
@@ -339,6 +383,38 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           ].join('\n');
 
           return { content: [{ type: 'text' as const, text }] };
+        }
+
+        case 'whatsapp_send_message': {
+          const parsed = SendMessageInputSchema.parse(args);
+          const result = await resolveGroupOrError(client, parsed.groupName);
+          if (result.error) return { content: [result.error], isError: true };
+
+          const sent = await client.sendMessage(result.group.id, parsed.message);
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Message sent to "${result.group.name}".\nMessage ID: ${sent.id}\nTimestamp: ${new Date(sent.timestamp * 1000).toISOString()}`,
+            }],
+          };
+        }
+
+        case 'whatsapp_reply_to_message': {
+          const parsed = ReplyToMessageInputSchema.parse(args);
+          const result = await resolveGroupOrError(client, parsed.groupName);
+          if (result.error) return { content: [result.error], isError: true };
+
+          const sent = await client.sendMessage(
+            result.group.id,
+            parsed.message,
+            parsed.messageId,
+          );
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Reply sent to "${result.group.name}" (quoting ${parsed.messageId}).\nMessage ID: ${sent.id}\nTimestamp: ${new Date(sent.timestamp * 1000).toISOString()}`,
+            }],
+          };
         }
 
         default:

@@ -102,3 +102,18 @@ export const GroupInfoInputSchema = z.object({
 });
 
 export type GroupInfoInput = z.infer<typeof GroupInfoInputSchema>;
+
+export const SendMessageInputSchema = z.object({
+  groupName: z.string().min(1, 'Group name is required'),
+  message: z.string().min(1, 'Message text is required'),
+});
+
+export type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
+
+export const ReplyToMessageInputSchema = z.object({
+  groupName: z.string().min(1, 'Group name is required'),
+  messageId: z.string().min(1, 'Message ID to reply to is required'),
+  message: z.string().min(1, 'Reply text is required'),
+});
+
+export type ReplyToMessageInput = z.infer<typeof ReplyToMessageInputSchema>;

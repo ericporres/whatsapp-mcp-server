@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   }
 
   registerTools(server, client);
-  log('MCP tools registered: whatsapp_list_groups, whatsapp_get_messages, whatsapp_export_chat, whatsapp_search_messages, whatsapp_group_info');
+  log('MCP tools registered: whatsapp_list_groups, whatsapp_get_messages, whatsapp_export_chat, whatsapp_search_messages, whatsapp_group_info, whatsapp_send_message, whatsapp_reply_to_message');
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -382,6 +382,35 @@ export class WhatsAppClient {
   }
 
   // -----------------------------------------------------------------------
+  // Send / Reply
+  // -----------------------------------------------------------------------
+
+  async sendMessage(
+    chatId: string,
+    text: string,
+    quotedMessageId?: string,
+  ): Promise<{ id: string; timestamp: number }> {
+    this.ensureReady();
+    return this.mutex.run(async () => {
+      log('info', `sendMessage: chatId=${chatId}, quotedMessageId=${quotedMessageId ?? 'none'}, text="${text.slice(0, 80)}..."`);
+      const chat = await this.getChatById(chatId);
+
+      const options: Record<string, unknown> = {};
+      if (quotedMessageId) {
+        options.quotedMessageId = quotedMessageId;
+      }
+
+      const sent = await chat.sendMessage(text, options);
+      log('info', `sendMessage: sent id=${sent.id._serialized}`);
+
+      return {
+        id: sent.id._serialized,
+        timestamp: sent.timestamp,
+      };
+    });
+  }
+
+  // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
 
