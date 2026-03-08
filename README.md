@@ -2,7 +2,7 @@
 
 **Your WhatsApp groups are a live intelligence network. This server lets Claude read them.**
 
-An open-source [MCP](https://modelcontextprotocol.io) server that connects WhatsApp group chats to Claude (and any MCP-compatible AI client). It exposes five tools for reading, searching, and exporting group conversations — plus a chat intelligence processor that extracts themes, opportunities, and actionable briefings from hundreds of messages.
+An open-source [MCP](https://modelcontextprotocol.io) server that connects WhatsApp group chats to Claude (and any MCP-compatible AI client). It exposes seven tools for reading, searching, exporting, and replying to group conversations — plus a chat intelligence processor that extracts themes, opportunities, and actionable briefings from hundreds of messages.
 
 I built this because I'm in a dozen professional WhatsApp groups — practitioners, investors, founders — where the information density is remarkable and the retrieval rate is abysmal. WhatsApp is optimized for *conversation*, not *comprehension*. This server fixes that.
 
@@ -10,7 +10,7 @@ I built this because I'm in a dozen professional WhatsApp groups — practitione
 
 ## What It Does
 
-**Five MCP tools** give Claude (or any MCP client) structured access to your WhatsApp groups:
+**Seven MCP tools** give Claude (or any MCP client) structured access to your WhatsApp groups:
 
 | Tool | What It Does |
 |------|-------------|
@@ -19,6 +19,8 @@ I built this because I'm in a dozen professional WhatsApp groups — practitione
 | `whatsapp_group_info` | Metadata, participants, descriptions |
 | `whatsapp_search_messages` | Keyword search across all groups or scoped to one |
 | `whatsapp_export_chat` | Full export in WhatsApp's native `.txt` format |
+| `whatsapp_send_message` | Send a message to any group (fuzzy name matching) |
+| `whatsapp_reply_to_message` | Reply to a specific message as a quoted reply |
 
 All tools support **fuzzy group name matching** — say "Book Club" and it finds "Book Club — Monthly Reads" using Levenshtein distance + substring matching. Nobody remembers exact group names. The system shouldn't require you to.
 
@@ -226,6 +228,8 @@ plugin/                   # Cowork slash command plugin
 **Multi-session HTTP server.** The StreamableHTTP transport generates unique session IDs. Each Cowork `initialize` creates a fresh MCP Server + Transport pair. All sessions share the single WhatsApp client (already protected by the mutex). The `Map<string, McpSession>` tracks active sessions with 30-minute TTL — stale sessions are cleaned up automatically.
 
 **Fuzzy group name matching.** Levenshtein distance + substring matching, case-insensitive. "book club" finds "Book Club — Monthly Reads." This is a small detail that makes the difference between a system you use daily and one you abandon after a week.
+
+**Write tools require the same mutex.** `whatsapp_send_message` and `whatsapp_reply_to_message` go through the same AsyncMutex as every read operation. Sending a message is a `chat.sendMessage()` call on the same Puppeteer page context — concurrent sends would corrupt page state just like concurrent reads. Quoted replies pass `quotedMessageId` to WhatsApp Web's native reply mechanism, so they render as proper quoted messages on all clients.
 
 **Context > Intelligence.** The gap between a chatbot and a useful assistant is almost never a smarter model — it's better context. The `EXAMPLE_CONTEXT` object is a few lines of configuration that transforms the analyzer from generic summarization to personalized intelligence. A well-informed current model beats a brilliant amnesiac every time.
 
