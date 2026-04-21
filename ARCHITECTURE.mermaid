@@ -1,0 +1,135 @@
+%% WhatsApp MCP Server — Architecture Diagram
+%% Two transport entry points, shared Baileys WhatsApp client, intelligence processor
+
+flowchart TB
+    %% ── Entry Points ──────────────────────────────────────────────
+    CC["Claude Code<br/>(Terminal)"]
+    CW["Cowork<br/>(Desktop App)"]
+
+    %% ── Transports ────────────────────────────────────────────────
+    STDIO["Stdio Transport<br/><i>index.ts</i>"]
+    HTTP["StreamableHTTP Transport<br/><i>http-server.ts</i>"]
+
+    %% ── Network Layer ─────────────────────────────────────────────
+    CF["Cloudflare Tunnel<br/><i>cloudflared</i><br/>127.0.0.1:$MCP_HTTP_PORT → HTTPS"]
+    SESS["Session Manager<br/>Map&lt;id, McpSession&gt;<br/>30-min TTL auto-cleanup"]
+    HEALTH["/health endpoint<br/>WA status + session count"]
+
+    %% ── MCP Server ────────────────────────────────────────────────
+    MCP["MCP Server<br/><i>@modelcontextprotocol/sdk</i>"]
+    TOOLS["Tool Registry<br/><i>tools.ts</i><br/>7 tools + fuzzy group matching"]
+
+    %% ── Tool Surface ──────────────────────────────────────────────
+    subgraph ToolSurface["MCP Tools"]
+        direction LR
+        T1["list_groups"]
+        T2["get_messages"]
+        T3["export_chat"]
+        T4["search_messages"]
+        T5["group_info"]
+        T6["send_message"]
+        T7["reply_to_message"]
+    end
+
+    %% ── Readiness + Serialization ─────────────────────────────────
+    READY["Readiness Gate<br/>connection=open AND buffer warm<br/><i>pre-ready → HTTP 503</i>"]
+    MUTEX["AsyncMutex<br/>Serial queue + 100ms min interval<br/><i>Signal session setup serialization</i>"]
+
+    %% ── WhatsApp Client ───────────────────────────────────────────
+    WA["WhatsAppClient<br/><i>whatsapp.ts</i><br/>Singleton per session name"]
+
+    %% ── Message Buffer ────────────────────────────────────────────
+    subgraph BufferLayer["Message Buffer"]
+        direction TB
+        RING["In-Memory Ring Buffer<br/>500 msgs/group · JID-keyed"]
+        SNAP["Disk Snapshot<br/><i>.baileys_auth-&lt;session&gt;/buffer.json</i><br/>60s write interval"]
+        HIST["messages.history-set<br/><i>One-shot on first pair</i>"]
+    end
+
+    %% ── Auth ──────────────────────────────────────────────────────
+    subgraph AuthFlow["Authentication"]
+        direction TB
+        QR["QR Code<br/>Pairing on first run"]
+        AUTH["WhatsApp Multi-Device Auth<br/>Signal Protocol handshake"]
+        CREDS["useMultiFileAuthState<br/><i>.baileys_auth-&lt;session&gt;/</i><br/>Noise keys · pre-keys · sessions"]
+    end
+
+    %% ── Baileys Transport ─────────────────────────────────────────
+    BAILEYS["Baileys Socket<br/><i>@whiskeysockets/baileys</i><br/>Noise protocol · binary frames"]
+    WAMD["WhatsApp Multi-Device Servers<br/><i>WebSocket — no browser, no DOM</i>"]
+
+    %% ── Intelligence Processor ────────────────────────────────────
+    subgraph Processor["Intelligence Processor<br/><i>src/processor/</i>"]
+        direction TB
+        PARSER["Parser<br/><i>parser.ts</i><br/>WhatsApp · Signal · MCP-JSON · raw"]
+        ANALYZER["Analyzer<br/><i>analyzer.ts</i><br/>Themes · Big Ideas · Opportunities<br/>Participation · Live Threads · Quotes"]
+        BRIEFING["Briefing Formatter<br/><i>briefing.ts</i><br/>Markdown / JSON output<br/>Section toggles"]
+        SYNTH["Cross-Group Synthesis<br/>Amplified signals · Network nodes<br/>Compounding opportunities"]
+    end
+
+    %% ── Connections: Entry → Transport ────────────────────────────
+    CC -->|"stdin/stdout"| STDIO
+    CW -->|"HTTPS"| CF
+    CF -->|"HTTP POST /mcp"| HTTP
+
+    %% ── HTTP internals ────────────────────────────────────────────
+    HTTP --> SESS
+    HTTP --> HEALTH
+
+    %% ── Transport → MCP Server ────────────────────────────────────
+    STDIO --> MCP
+    SESS --> MCP
+
+    %% ── MCP → Tools → Readiness → Mutex → Client ────────────────
+    MCP --> TOOLS
+    TOOLS --> ToolSurface
+    ToolSurface --> READY
+    READY --> MUTEX
+    MUTEX --> WA
+
+    %% ── Client → Baileys → WhatsApp MD ──────────────────────────
+    WA --> AuthFlow
+    QR --> AUTH
+    AUTH --> CREDS
+    CREDS -.->|"Reused on restart"| BAILEYS
+    WA --> BAILEYS
+    BAILEYS --> WAMD
+
+    %% ── Buffer ingestion + readiness signal ─────────────────────
+    BAILEYS -->|"messages.upsert"| RING
+    HIST -->|"backfill drained"| READY
+    RING --> SNAP
+    SNAP -.->|"warm start"| RING
+    RING --> WA
+
+    %% ── Intelligence Processor (standalone, consumed by skills) ──
+    PARSER --> ANALYZER
+    ANALYZER --> BRIEFING
+    ANALYZER --> SYNTH
+
+    %% ── Styling ───────────────────────────────────────────────────
+    classDef entry fill:#4A90D9,stroke:#2C5F8A,color:#fff
+    classDef transport fill:#5B9BD5,stroke:#3A6FA0,color:#fff
+    classDef network fill:#7B68EE,stroke:#5A4DB8,color:#fff
+    classDef mcp fill:#F4A460,stroke:#D4844A,color:#000
+    classDef mutex fill:#FF6B6B,stroke:#CC5555,color:#fff
+    classDef ready fill:#FFA07A,stroke:#CC7B5F,color:#000
+    classDef wa fill:#25D366,stroke:#1DA851,color:#fff
+    classDef auth fill:#20B2AA,stroke:#178F88,color:#fff
+    classDef buffer fill:#87CEEB,stroke:#5F9EA0,color:#000
+    classDef baileys fill:#9370DB,stroke:#7556B2,color:#fff
+    classDef processor fill:#FFD700,stroke:#CCB000,color:#000
+    classDef tool fill:#F0E68C,stroke:#C0B86C,color:#000
+
+    class CC,CW entry
+    class STDIO,HTTP transport
+    class CF,SESS,HEALTH network
+    class MCP,TOOLS mcp
+    class MUTEX mutex
+    class READY ready
+    class WA wa
+    class QR,AUTH,CREDS auth
+    class RING,SNAP,HIST buffer
+    class BAILEYS,WAMD baileys
+    class PARSER,ANALYZER,BRIEFING,SYNTH processor
+    class T1,T2,T3,T4,T5,T6,T7 tool

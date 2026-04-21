@@ -21,7 +21,22 @@ import { registerTools } from './tools.js';
 // Config
 // ---------------------------------------------------------------------------
 
-const PORT = parseInt(process.env.MCP_HTTP_PORT ?? '3847', 10);
+// Require an explicit port. Pick any free high port on your machine — the
+// server binds to 127.0.0.1 only; a tunnel or reverse proxy handles exposure.
+const rawPort = process.env.MCP_HTTP_PORT;
+if (!rawPort) {
+  process.stderr.write(
+    '[whatsapp-mcp-http] ERROR: MCP_HTTP_PORT is required. Set it to any free high port.\n',
+  );
+  process.exit(1);
+}
+const PORT = parseInt(rawPort, 10);
+if (!Number.isFinite(PORT) || PORT <= 0 || PORT > 65535) {
+  process.stderr.write(
+    `[whatsapp-mcp-http] ERROR: MCP_HTTP_PORT="${rawPort}" is not a valid port.\n`,
+  );
+  process.exit(1);
+}
 const SESSION_NAME = process.env.WHATSAPP_SESSION_NAME ?? 'default';
 
 // ---------------------------------------------------------------------------

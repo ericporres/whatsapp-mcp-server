@@ -6,6 +6,7 @@
     __HOME__     → your home directory (e.g. /Users/yourname)
     __PROJECT__  → absolute path to this project
     __SESSION__  → your WhatsApp session name
+    __PORT__     → the port you chose for MCP_HTTP_PORT (any free high port)
 -->
 <plist version="1.0">
 <dict>
@@ -27,7 +28,7 @@
     <key>WHATSAPP_SESSION_NAME</key>
     <string>__SESSION__</string>
     <key>MCP_HTTP_PORT</key>
-    <string>3847</string>
+    <string>__PORT__</string>
   </dict>
 
   <key>WorkingDirectory</key>

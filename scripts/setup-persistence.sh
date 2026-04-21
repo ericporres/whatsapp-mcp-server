@@ -16,8 +16,14 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOME_DIR="$HOME"
 SESSION_NAME="default"
+MCP_PORT=""      # Any free high port on your machine. Required.
 TUNNEL_TOKEN=""  # Leave empty to skip tunnel setup
 LABEL_PREFIX="com.$(whoami)"
+
+if [[ -z "$MCP_PORT" ]]; then
+  echo "ERROR: MCP_PORT is unset. Edit scripts/setup-persistence.sh and set it to any free high port on your machine." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Derived
@@ -44,6 +50,7 @@ sed \
   -e "s|__HOME__|$HOME_DIR|g" \
   -e "s|__PROJECT__|$PROJECT_DIR|g" \
   -e "s|__SESSION__|$SESSION_NAME|g" \
+  -e "s|__PORT__|$MCP_PORT|g" \
   -e "s|com.yourname.whatsapp-mcp|${LABEL_PREFIX}.whatsapp-mcp|g" \
   config/whatsapp-mcp.plist.template > "$MCP_PLIST"
 
@@ -69,10 +76,10 @@ fi
 
 echo ""
 echo "=== Setup Complete ==="
-echo "MCP server: http://localhost:3847/mcp"
-echo "Health:     http://localhost:3847/health"
+echo "MCP server: http://localhost:${MCP_PORT}/mcp"
+echo "Health:     http://localhost:${MCP_PORT}/health"
 echo ""
-echo "Test with: curl http://localhost:3847/health"
+echo "Test with: curl http://localhost:${MCP_PORT}/health"
 echo ""
 echo "To register with Claude Code, add to ~/.claude.json:"
 echo "  $(cat config/mcp-registration.json.template | sed "s|__PROJECT__|$PROJECT_DIR|g")"

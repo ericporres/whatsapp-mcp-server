@@ -41,10 +41,10 @@ The intelligence processor was inspired by [Scott Walker](https://github.com/Sco
 ## Architecture
 
 ```
-┌─────────────┐     stdio      ┌───────────────┐     Puppeteer    ┌──────────────┐
-│ Claude Code  │◄──────────────►│  MCP Server   │◄────────────────►│  WhatsApp    │
-└─────────────┘                │  (index.ts)   │                  │  Web Client  │
-                               └───────────────┘                  └──────────────┘
+┌─────────────┐     stdio      ┌───────────────┐    WebSocket    ┌──────────────┐
+│ Claude Code │◄──────────────►│  MCP Server   │◄───────────────►│  WhatsApp    │
+└─────────────┘                │  (index.ts)   │  Noise/Signal   │  Multi-Device│
+                               └───────────────┘                 └──────────────┘
 ┌─────────────┐   HTTP/SSE     ┌───────────────┐
 │   Cowork    │◄──────────────►│  HTTP Server  │  (same WhatsApp client)
 │  (Desktop)  │  + cloudflared │ (http-server) │
@@ -56,9 +56,13 @@ Two transport modes, one WhatsApp client:
 - **Claude Code** → stdio transport (`index.ts`) — direct pipe, single session
 - **Cowork / Desktop** → StreamableHTTP transport (`http-server.ts`) — multi-session over HTTPS via Cloudflare tunnel
 
-WhatsApp has no API for group chats. There's the Business API (customer messaging only) and WhatsApp Web (a browser session authenticated by QR code). So the server uses [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) — Puppeteer driving a headless Chromium instance that maintains a persistent authenticated session, just like your browser tab does.
+WhatsApp has no open API for group chats. The Business API is for customer messaging only. So this server uses [Baileys](https://github.com/WhiskeySockets/Baileys) — a direct WebSocket implementation of the WhatsApp Multi-Device protocol. No headless browser, no DOM scraping. Credentials and Signal Protocol keys persist to `.baileys_auth-<session>/` via `useMultiFileAuthState`, and the client reconnects in roughly two seconds after restarts.
 
-This creates a single-threaded bottleneck. One browser, one page context, multiple MCP sessions potentially requesting data simultaneously. The solution is an **AsyncMutex** — a FIFO queue with a 2-second minimum interval between operations. Every WhatsApp interaction goes through the mutex. No race conditions, no page state corruption, no rate-limit triggers. It's not glamorous. It's load-bearing.
+Every read and write flows through an **AsyncMutex** that serializes WhatsApp operations behind a FIFO queue with a 100ms minimum interval. Baileys is reentrant-safe, but Signal Protocol session setup on unfamiliar recipients benefits from serialization, and the mutex keeps us well under WhatsApp's rate-limit thresholds without having to reason about them explicitly.
+
+Messages stream in over the WebSocket and land in an **in-memory ring buffer** — 500 messages per group, JID-keyed — that the tool layer reads from. The buffer snapshots to `.baileys_auth-<session>/buffer.json` every 60 seconds and rehydrates on boot. This is load-bearing, not optional: the `messages.history-set` event that Baileys emits on first pairing is a one-shot, so on any reconnect the snapshot is the only thing standing between you and a cold buffer.
+
+A **readiness gate** keeps this honest. Tool calls return `503 Service Unavailable` until the WebSocket has reached `connection.update → open` AND the buffer is warm (either `messages.history-set` has drained or 30 seconds have elapsed). The server never crashes into half-initialized state, and clients get a clean retryable error instead.
 
 ---
 
@@ -67,7 +71,7 @@ This creates a single-threaded bottleneck. One browser, one page context, multip
 ### Prerequisites
 
 - Node.js 22+
-- A WhatsApp account (authenticates via QR code on first run)
+- A WhatsApp account (pairs via QR code on first run)
 
 ### Install and Build
 
@@ -78,13 +82,13 @@ npm install
 npm run build
 ```
 
-### First Run — QR Authentication
+### First Run — QR Pairing
 
 ```bash
 WHATSAPP_SESSION_NAME=my-session node dist/mcp-server/index.js
 ```
 
-Scan the QR code with WhatsApp on your phone. Session credentials cache in `.wwebjs_auth/` — you won't need to scan again unless you revoke the session.
+Scan the QR code with WhatsApp on your phone. Credentials and Signal keys cache in `.baileys_auth-my-session/` — you won't need to scan again unless you remove that directory or revoke the linked device from your phone.
 
 ### Register with Claude Code
 
@@ -110,15 +114,18 @@ Then ask Claude: *"What WhatsApp groups am I in?"*
 
 The HTTP server supports multiple concurrent MCP sessions. Each `initialize` handshake spawns a fresh Server + Transport pair. All sessions share the single WhatsApp client (protected by the mutex). Sessions are tracked in a `Map<string, McpSession>` with 30-minute TTL and automatic cleanup.
 
+Pick any free high port on your machine and set it as `MCP_HTTP_PORT`. The server binds to `127.0.0.1` only — a tunnel or reverse proxy is responsible for exposing it.
+
 ```bash
-MCP_HTTP_PORT=3847 node dist/mcp-server/http-server.js
+# pick any free high port on your machine
+MCP_HTTP_PORT=<your-port> node dist/mcp-server/http-server.js
 ```
 
 Expose over HTTPS with a Cloudflare tunnel:
 
 ```bash
 # Quick tunnel (temporary URL)
-cloudflared tunnel --url http://localhost:3847
+cloudflared tunnel --url http://localhost:$MCP_HTTP_PORT
 
 # Named tunnel (stable URL — recommended for persistent setups)
 cloudflared tunnel run your-tunnel-name
@@ -126,7 +133,7 @@ cloudflared tunnel run your-tunnel-name
 
 ### Securing the Tunnel
 
-The server runs locally — your machine, your data, your authenticated WhatsApp session. But exposing it via a Cloudflare tunnel creates a public HTTPS endpoint. You should lock it down.
+The server runs locally — your machine, your data, your paired WhatsApp session. But exposing it via a Cloudflare tunnel creates a public HTTPS endpoint. You should lock it down.
 
 **Security tiers** (pick your comfort level):
 
@@ -151,12 +158,12 @@ For bearer token authentication, set `MCP_AUTH_TOKEN` in your environment and th
 For always-on operation — server starts at login, tunnel reconnects automatically, logs to `~/Library/Logs/`:
 
 ```bash
-# Edit the variables at the top of the script first
+# Edit the variables at the top of the script first (SESSION_NAME, MCP_PORT, TUNNEL_TOKEN)
 chmod +x scripts/setup-persistence.sh
 ./scripts/setup-persistence.sh
 ```
 
-Templates for the LaunchAgent plists are in `config/`. The script substitutes your paths and loads them.
+Templates for the LaunchAgent plists are in `config/`. The script substitutes your paths, your chosen port, and your tunnel token, then loads them.
 
 ---
 
@@ -205,7 +212,7 @@ src/
 │   ├── http-server.ts    # StreamableHTTP transport (Cowork + tunnel)
 │   ├── tools.ts          # MCP tool definitions + fuzzy group matching
 │   ├── types.ts          # Zod schemas for tool inputs
-│   └── whatsapp.ts       # WhatsApp client wrapper + AsyncMutex
+│   └── whatsapp.ts       # Baileys client wrapper + ring buffer + mutex
 └── processor/
     ├── parser.ts         # Multi-format chat parser
     ├── analyzer.ts       # Theme/idea/opportunity extraction (← customize this)
@@ -219,17 +226,19 @@ plugin/                   # Cowork slash command plugin
 
 ## Design Decisions
 
-**AsyncMutex over rate limiting.** Puppeteer's single-threaded browser doesn't degrade gracefully under concurrent `page.evaluate()` calls — it crashes. The mutex serializes all WhatsApp API calls through a FIFO queue with a 2-second minimum interval. This prevents concurrency crashes *and* WhatsApp rate-limit triggers. Every tool call, every message fetch, every search goes through the same queue.
+**Baileys over a headless browser.** An earlier cut of this server drove WhatsApp Web through Puppeteer. It worked, but every failure mode was a browser failure — page-context crashes on large fetches, stale DOM references after reconnects, memory leaks from orphaned Chromium processes. Baileys speaks the WhatsApp Multi-Device protocol directly over a WebSocket. No browser, no DOM, no Chromium. Reconnects take two seconds instead of fifteen, and the whole surface area collapses to "is the socket open and is the buffer warm."
 
-**Fetch cap at 300 messages.** `chat.fetchMessages({limit: N})` scrolls through WhatsApp Web's DOM to load messages. At 400+ messages on high-volume groups, the headless browser becomes unreliable — Puppeteer's page context destabilizes and calls start returning 500s. The server caps every fetch at 300 regardless of what the client requests, then applies date filtering client-side. This trades theoretical completeness for practical reliability.
+**In-memory ring buffer + disk snapshot.** Baileys streams messages in real time via `messages.upsert`, but its historical sync (`messages.history-set`) fires **once**, on the initial pairing. Every subsequent reconnect delivers only live traffic. That's a trap: a restart would otherwise start from an empty buffer and tools would return stale or partial results. The server keeps a 500-message-per-group ring buffer in memory, snapshots it to `.baileys_auth-<session>/buffer.json` every 60 seconds, and rehydrates on boot. The snapshot is load-bearing — do not treat it as a cache.
 
-**Automatic retry on transient errors.** Despite the mutex, WhatsApp Web is a browser session — flaky by nature. The tool handler wraps every operation in a retry loop: one automatic retry after a 3-second delay. Most transient failures (Puppeteer page crashes, stale DOM references, brief network hiccups) resolve on the second attempt. The delay gives the browser time to stabilize before retrying.
+**Readiness gate, not a spinlock.** On cold start there's a window between "process alive" and "ready to serve." The server doesn't answer tool calls during that window; it returns `503 Service Unavailable` with a retry hint until `connection.update → open` fires AND the buffer is either drained from `history-set` or 30 seconds have elapsed. Clients that retry sensibly get clean results. Clients that don't fail fast instead of getting silently wrong data.
+
+**AsyncMutex over rate limiting.** Every WhatsApp operation — reads, writes, metadata lookups — flows through a FIFO queue with a 100ms minimum interval between operations. Baileys itself is reentrant-safe, but Signal Protocol session setup on unfamiliar recipients benefits from serialization, and the mutex keeps us comfortably under WhatsApp's rate-limit thresholds without having to model them.
 
 **Multi-session HTTP server.** The StreamableHTTP transport generates unique session IDs. Each Cowork `initialize` creates a fresh MCP Server + Transport pair. All sessions share the single WhatsApp client (already protected by the mutex). The `Map<string, McpSession>` tracks active sessions with 30-minute TTL — stale sessions are cleaned up automatically.
 
 **Fuzzy group name matching.** Levenshtein distance + substring matching, case-insensitive. "book club" finds "Book Club — Monthly Reads." This is a small detail that makes the difference between a system you use daily and one you abandon after a week.
 
-**Write tools require the same mutex.** `whatsapp_send_message` and `whatsapp_reply_to_message` go through the same AsyncMutex as every read operation. Sending a message is a `chat.sendMessage()` call on the same Puppeteer page context — concurrent sends would corrupt page state just like concurrent reads. Quoted replies pass `quotedMessageId` to WhatsApp Web's native reply mechanism, so they render as proper quoted messages on all clients.
+**Write tools require the same mutex.** `whatsapp_send_message` and `whatsapp_reply_to_message` go through the same AsyncMutex as every read. Quoted replies use Baileys' `quoted` field on `sendMessage`, so they render as native quoted messages on all clients — phones, desktop, web.
 
 **Context > Intelligence.** The gap between a chatbot and a useful assistant is almost never a smarter model — it's better context. The `EXAMPLE_CONTEXT` object is a few lines of configuration that transforms the analyzer from generic summarization to personalized intelligence. A well-informed current model beats a brilliant amnesiac every time.
 
@@ -239,7 +248,7 @@ plugin/                   # Cowork slash command plugin
 
 The chat intelligence processor was inspired by **[Scott Walker](https://github.com/Scottywalks22)** (Founder & CEO, [UpShift Collective](https://www.upshiftcollective.com/)), who built the [Junto Group Analyzer](https://juntogroupanalyzer.lovable.app/) — a Claude skill that transforms WhatsApp group exports into structured intelligence briefings. Scott shared it as a gift to our professional group, and the six-output framework (themes, big ideas, opportunities, participation analysis, live threads, notable quotes) proved the concept: structured analysis of group conversations surfaces signal that passive consumption misses entirely. This project extends that framework into a real-time MCP server with multi-group synthesis and configurable professional context.
 
-Built with [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js), the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), and [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
+Built with [Baileys](https://github.com/WhiskeySockets/Baileys), the [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk), and [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
 ---
 
