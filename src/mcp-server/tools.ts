@@ -430,7 +430,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
         process.stderr.write(
           `[${new Date().toISOString()}] [tools] ${name} attempt ${attempt} failed: ${message} — retrying in 3s...\n`,
         );
-        await new Promise((r) => setTimeout(r, 3000));
+        await new Promise((r) => setTimeout(r, 500));
         continue;
       }
       return {

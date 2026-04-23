@@ -2,6 +2,8 @@ node_modules/
 dist/
 .wwebjs_auth/
 .wwebjs_cache/
+.baileys_auth*/
+buffer.json
 exports/*.txt
 exports/briefings/
 .env

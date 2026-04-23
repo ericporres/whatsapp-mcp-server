@@ -1,8 +1,12 @@
-import pkg from 'whatsapp-web.js';
-import type { Client as ClientType, Chat, Message, GroupChat, Contact } from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
-
-import qrcode from 'qrcode-terminal';
+import makeWASocket, {
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  DisconnectReason,
+} from '@whiskeysockets/baileys';
+import type { WASocket, WAMessage, GroupMetadata } from '@whiskeysockets/baileys';
+import pino from 'pino';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 import { format } from 'date-fns';
 
 // ---------------------------------------------------------------------------
@@ -44,8 +48,8 @@ export interface WhatsAppGroupInfo {
 
 export interface GetMessagesOptions {
   limit?: number;
-  after?: number;   // unix timestamp (seconds)
-  before?: number;  // unix timestamp (seconds)
+  after?: number;
+  before?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +67,7 @@ function log(level: 'info' | 'warn' | 'error', message: string, data?: unknown):
 }
 
 // ---------------------------------------------------------------------------
-// Async Mutex — serializes WhatsApp API calls (Puppeteer is single-threaded)
+// Async Mutex — serializes WhatsApp WebSocket calls (cheap insurance)
 // ---------------------------------------------------------------------------
 
 class AsyncMutex {
@@ -71,7 +75,7 @@ class AsyncMutex {
   private locked = false;
   private lastRelease = 0;
 
-  constructor(private readonly minIntervalMs: number = 2000) {}
+  constructor(private readonly minIntervalMs: number = 100) {}
 
   async acquire(): Promise<void> {
     if (this.locked) {
@@ -79,7 +83,6 @@ class AsyncMutex {
     }
     this.locked = true;
 
-    // Enforce minimum interval between calls
     const now = Date.now();
     const elapsed = now - this.lastRelease;
     if (elapsed < this.minIntervalMs && this.lastRelease > 0) {
@@ -109,24 +112,188 @@ class AsyncMutex {
 }
 
 // ---------------------------------------------------------------------------
-// WhatsAppClient
+// BufferEntry — internal type for the per-group ring buffer
+// ---------------------------------------------------------------------------
+
+interface BufferEntry {
+  id: string;
+  body: string;
+  author: string;
+  authorName: string;
+  timestamp: number;
+  hasMedia: boolean;
+  isForwarded: boolean;
+  fromMe: boolean;
+  quotedMsg?: { body: string; author: string };
+  waKey: any;
+  waMessage: any;
+}
+
+// ---------------------------------------------------------------------------
+// MessageBuffer — bounded per-group ring buffer with disk persistence
+//
+// Persists snapshot every 60s AND on graceful shutdown.  Rehydrates on
+// startup.  This snapshot is load-bearing — messages.history-set is a
+// one-shot on first pair and does NOT re-fire on reconnect.
+// ---------------------------------------------------------------------------
+
+class MessageBuffer {
+  private buffers = new Map<string, BufferEntry[]>();
+  private readonly maxPerGroup = 500;
+  private readonly snapshotPath: string;
+  private snapshotInterval: NodeJS.Timeout | null = null;
+  private _lastUpsertTs = 0;
+
+  constructor(authDir: string) {
+    this.snapshotPath = join(authDir, 'buffer.json');
+  }
+
+  get lastUpsertTs(): number {
+    return this._lastUpsertTs;
+  }
+
+  get totalSize(): number {
+    let total = 0;
+    for (const buf of this.buffers.values()) total += buf.length;
+    return total;
+  }
+
+  get groupCount(): number {
+    return this.buffers.size;
+  }
+
+  rehydrate(): boolean {
+    try {
+      if (!existsSync(this.snapshotPath)) return false;
+      const raw = readFileSync(this.snapshotPath, 'utf-8');
+      const data: Record<string, BufferEntry[]> = JSON.parse(raw);
+      for (const [jid, entries] of Object.entries(data)) {
+        this.buffers.set(jid, entries.slice(-this.maxPerGroup));
+      }
+      log('info', `Buffer rehydrated: ${this.totalSize} messages across ${this.groupCount} groups`);
+      return true;
+    } catch (err) {
+      log('warn', 'Buffer rehydration failed', err);
+      return false;
+    }
+  }
+
+  upsert(jid: string, entries: BufferEntry[]): void {
+    let buf = this.buffers.get(jid);
+    if (!buf) {
+      buf = [];
+      this.buffers.set(jid, buf);
+    }
+
+    const existingIds = new Set(buf.map((e) => e.id));
+    for (const entry of entries) {
+      if (!existingIds.has(entry.id)) {
+        buf.push(entry);
+        existingIds.add(entry.id);
+      }
+    }
+
+    buf.sort((a, b) => a.timestamp - b.timestamp);
+    if (buf.length > this.maxPerGroup) {
+      this.buffers.set(jid, buf.slice(-this.maxPerGroup));
+    }
+
+    this._lastUpsertTs = Date.now();
+  }
+
+  get(jid: string, limit: number, after?: number, before?: number): BufferEntry[] {
+    const buf = this.buffers.get(jid) || [];
+    let filtered: BufferEntry[] = buf;
+
+    if (after !== undefined) {
+      filtered = filtered.filter((e) => e.timestamp >= after);
+    }
+    if (before !== undefined) {
+      filtered = filtered.filter((e) => e.timestamp <= before);
+    }
+
+    return filtered.slice(-limit);
+  }
+
+  getForGroup(jid: string): BufferEntry[] {
+    return this.buffers.get(jid) || [];
+  }
+
+  search(query: string, jid?: string, limit = 50): BufferEntry[] {
+    const lowerQuery = query.toLowerCase();
+    const results: BufferEntry[] = [];
+
+    const jids = jid ? [jid] : [...this.buffers.keys()];
+    for (const j of jids) {
+      const buf = this.buffers.get(j) || [];
+      for (const entry of buf) {
+        if (entry.body.toLowerCase().includes(lowerQuery)) {
+          results.push(entry);
+          if (results.length >= limit) return results;
+        }
+      }
+    }
+
+    return results;
+  }
+
+  findById(messageId: string): BufferEntry | undefined {
+    for (const buf of this.buffers.values()) {
+      const found = buf.find((e) => e.id === messageId);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  snapshot(): void {
+    try {
+      const data: Record<string, BufferEntry[]> = {};
+      for (const [jid, entries] of this.buffers.entries()) {
+        data[jid] = entries;
+      }
+      const dir = join(this.snapshotPath, '..');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.snapshotPath, JSON.stringify(data), 'utf-8');
+      log('info', `Buffer snapshot: ${this.totalSize} messages`);
+    } catch (err) {
+      log('error', 'Buffer snapshot failed', err);
+    }
+  }
+
+  startPeriodicSnapshot(): void {
+    if (this.snapshotInterval) return;
+    this.snapshotInterval = setInterval(() => this.snapshot(), 60_000);
+  }
+
+  stopPeriodicSnapshot(): void {
+    if (this.snapshotInterval) {
+      clearInterval(this.snapshotInterval);
+      this.snapshotInterval = null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WhatsAppClient — Baileys WebSocket client
 // ---------------------------------------------------------------------------
 
 export class WhatsAppClient {
-  private client: ClientType;
+  private sock: WASocket | null = null;
   private ready = false;
-  private mutex = new AsyncMutex(2000); // serialize + 2s min interval
+  private buffer: MessageBuffer;
+  private mutex = new AsyncMutex(100);
+  private contacts = new Map<string, string>();
+  private connectionOpen = false;
+  private bufferWarm = false;
+  private readyResolve: (() => void) | null = null;
+  private destroying = false;
+  private saveCreds: (() => Promise<void>) | null = null;
+
+  private static readonly AUTH_DIR = '.baileys_auth';
+  private static readonly BAILEYS_LOGGER = pino({ level: 'silent' }, pino.destination(2));
 
   constructor(private readonly sessionName: string) {
-    this.client = new Client({
-      authStrategy: new LocalAuth({ clientId: sessionName }),
-      puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      },
-    });
-
-    this.registerEventHandlers();
+    this.buffer = new MessageBuffer(WhatsAppClient.AUTH_DIR);
   }
 
   // -----------------------------------------------------------------------
@@ -134,42 +301,40 @@ export class WhatsAppClient {
   // -----------------------------------------------------------------------
 
   async initialize(): Promise<void> {
-    const MAX_RETRIES = 3;
-    let attempt = 0;
+    log('info', 'Initializing WhatsApp client (Baileys)...');
 
-    while (attempt < MAX_RETRIES) {
-      attempt++;
-      try {
-        log('info', `Initializing WhatsApp client (attempt ${attempt}/${MAX_RETRIES})...`);
-        await this.connectWithTimeout(120_000);
-        log('info', 'WhatsApp client ready.');
-        return;
-      } catch (err) {
-        log('error', `Initialization attempt ${attempt} failed.`, err);
-        if (attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt), 16_000);
-          log('info', `Retrying in ${backoff}ms...`);
-          await new Promise<void>((resolve) => setTimeout(resolve, backoff));
-          try {
-            await this.client.destroy();
-          } catch {
-            // ignore — client may not be initialized
-          }
-          this.client = new Client({
-            authStrategy: new LocalAuth({ clientId: this.sessionName }),
-            puppeteer: {
-              headless: true,
-              args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            },
-          });
-          this.registerEventHandlers();
-        } else {
-          throw new Error(
-            `WhatsApp client failed to initialize after ${MAX_RETRIES} attempts: ${String(err)}`,
-          );
-        }
-      }
-    }
+    const rehydrated = this.buffer.rehydrate();
+    this.bufferWarm = rehydrated;
+
+    await this.createSocket();
+    await this.waitForReady();
+
+    this.buffer.startPeriodicSnapshot();
+    log(
+      'info',
+      `WhatsApp client ready (buffer: ${this.buffer.totalSize} messages across ${this.buffer.groupCount} groups)`,
+    );
+  }
+
+  private async createSocket(): Promise<void> {
+    const { state, saveCreds } = await useMultiFileAuthState(WhatsAppClient.AUTH_DIR);
+    this.saveCreds = saveCreds;
+
+    const { version } = await fetchLatestBaileysVersion();
+    log('info', `WA Web version: ${version.join('.')}`);
+
+    this.sock = makeWASocket({
+      auth: state,
+      version,
+      logger: WhatsAppClient.BAILEYS_LOGGER,
+      getMessage: async (key) => {
+        const entry = this.buffer.findById(key.id || '');
+        return entry?.waMessage || undefined;
+      },
+    });
+
+    this.sock.ev.on('creds.update', () => this.saveCreds?.());
+    this.registerEventHandlers();
   }
 
   isReady(): boolean {
@@ -178,11 +343,14 @@ export class WhatsAppClient {
 
   async destroy(): Promise<void> {
     log('info', 'Shutting down WhatsApp client...');
+    this.destroying = true;
     this.ready = false;
+    this.buffer.snapshot();
+    this.buffer.stopPeriodicSnapshot();
     try {
-      await this.client.destroy();
-    } catch (err) {
-      log('error', 'Error during client destroy.', err);
+      this.sock?.end(undefined);
+    } catch {
+      // socket may already be closed
     }
     log('info', 'WhatsApp client destroyed.');
   }
@@ -194,17 +362,23 @@ export class WhatsAppClient {
   async getGroups(): Promise<WhatsAppGroupSummary[]> {
     this.ensureReady();
     return this.mutex.run(async () => {
-      log('info', 'getGroups: acquiring mutex, fetching chats...');
-      const chats = await this.client.getChats();
-      const groupChats = chats.filter((c: Chat): c is GroupChat => c.isGroup);
+      log('info', 'getGroups: fetching participating groups...');
+      const groups = await this.sock!.groupFetchAllParticipating();
 
-      const summaries: WhatsAppGroupSummary[] = groupChats.map((g: GroupChat) => ({
-        id: g.id._serialized,
-        name: g.name,
-        memberCount: g.participants?.length ?? 0,
-        lastMessage: g.lastMessage?.body ?? '',
-        lastActivityTimestamp: g.timestamp ?? 0,
-      }));
+      const summaries: WhatsAppGroupSummary[] = Object.values(groups).map(
+        (g: GroupMetadata) => {
+          const buf = this.buffer.getForGroup(g.id);
+          const last = buf.length > 0 ? buf[buf.length - 1] : null;
+
+          return {
+            id: g.id,
+            name: g.subject,
+            memberCount: g.participants?.length ?? 0,
+            lastMessage: last?.body ?? '',
+            lastActivityTimestamp: last?.timestamp ?? 0,
+          };
+        },
+      );
 
       summaries.sort((a, b) => b.lastActivityTimestamp - a.lastActivityTimestamp);
       log('info', `getGroups: returning ${summaries.length} groups`);
@@ -217,83 +391,48 @@ export class WhatsAppClient {
     options: GetMessagesOptions = {},
   ): Promise<WhatsAppMessageEntry[]> {
     this.ensureReady();
-    return this.mutex.run(async () => {
-      log('info', `getGroupMessages: groupId=${groupId}, options=${JSON.stringify(options)}`);
-      const { limit = 200, after, before } = options;
-      const chat = await this.getChatById(groupId);
+    const { limit = 200, after, before } = options;
+    log('info', `getGroupMessages: groupId=${groupId}, limit=${limit}`);
 
-      // Cap at 300 — Puppeteer is unreliable when scrolling through 400+ messages
-      // in high-volume groups. fetchCount > limit allows room for date filtering.
-      const fetchCount = Math.min(limit * 2, 300);
-      log('info', `getGroupMessages: fetching ${fetchCount} raw messages from WhatsApp Web...`);
+    const entries = this.buffer.get(groupId, limit, after, before);
 
-      let rawMessages: Message[];
-      try {
-        rawMessages = await chat.fetchMessages({ limit: fetchCount });
-        log('info', `getGroupMessages: got ${rawMessages.length} raw messages`);
-      } catch (fetchErr) {
-        log('error', `getGroupMessages: fetchMessages crashed (limit=${fetchCount})`, fetchErr);
-        throw fetchErr;
-      }
+    const result: WhatsAppMessageEntry[] = entries.map((e) => ({
+      id: e.id,
+      body: e.body,
+      author: e.author,
+      authorName: e.authorName,
+      timestamp: e.timestamp,
+      hasMedia: e.hasMedia,
+      isForwarded: e.isForwarded,
+      quotedMsg: e.quotedMsg,
+    }));
 
-      let filtered = rawMessages;
-
-      if (after !== undefined) {
-        const beforeFilterCount = filtered.length;
-        filtered = filtered.filter((m) => m.timestamp >= after);
-        log('info', `getGroupMessages: afterDate filter kept ${filtered.length}/${beforeFilterCount}`);
-      }
-      if (before !== undefined) {
-        filtered = filtered.filter((m) => m.timestamp <= before);
-      }
-
-      filtered = filtered.slice(0, limit);
-
-      const entries = await Promise.all(
-        filtered.map(async (m) => this.messageToEntry(m)),
-      );
-
-      log('info', `getGroupMessages: returning ${entries.length} messages`);
-      return entries;
-    });
+    log('info', `getGroupMessages: returning ${result.length} messages`);
+    return result;
   }
 
   async getGroupInfo(groupId: string): Promise<WhatsAppGroupInfo> {
     this.ensureReady();
     return this.mutex.run(async () => {
       log('info', `getGroupInfo: groupId=${groupId}`);
-      const chat = await this.getChatById(groupId);
-      if (!chat.isGroup) {
-        throw new Error(`Chat ${groupId} is not a group.`);
-      }
-      const group = chat as GroupChat;
+      const meta = await this.sock!.groupMetadata(groupId);
 
-      const participants: GroupParticipant[] = await Promise.all(
-        (group.participants ?? []).map(async (p) => {
-          let name = p.id._serialized;
-          try {
-            const contact = await this.client.getContactById(p.id._serialized);
-            name = contact.pushname || contact.name || contact.number || name;
-          } catch {
-            // fallback to serialized id
-          }
-          return {
-            id: p.id._serialized,
-            name,
-            isAdmin: p.isAdmin || p.isSuperAdmin || false,
-          };
-        }),
+      const participants: GroupParticipant[] = (meta.participants ?? []).map((p) => ({
+        id: p.id,
+        name: this.contacts.get(p.id) || p.id.replace(/@.*/, ''),
+        isAdmin: p.admin === 'admin' || p.admin === 'superadmin',
+      }));
+
+      log(
+        'info',
+        `getGroupInfo: returning "${meta.subject}" with ${participants.length} participants`,
       );
-
-      log('info', `getGroupInfo: returning info for "${group.name}" with ${participants.length} participants`);
       return {
-        id: group.id._serialized,
-        name: group.name,
-        description: group.description ?? '',
+        id: meta.id,
+        name: meta.subject,
+        description: meta.desc ?? '',
         participants,
-        createdAt: group.createdAt?.getTime?.()
-          ? Math.floor(group.createdAt.getTime() / 1000)
-          : (group as any).groupMetadata?.creation ?? 0,
+        createdAt: meta.creation ?? 0,
       };
     });
   }
@@ -308,45 +447,23 @@ export class WhatsAppClient {
     limit = 50,
   ): Promise<WhatsAppMessageEntry[]> {
     this.ensureReady();
-    return this.mutex.run(async () => {
-      log('info', `searchMessages: query="${query}", groupId=${groupId ?? 'all'}, limit=${limit}`);
-      const lowerQuery = query.toLowerCase();
-      const results: WhatsAppMessageEntry[] = [];
+    log('info', `searchMessages: query="${query}", groupId=${groupId ?? 'all'}, limit=${limit}`);
 
-      if (groupId) {
-        const chat = await this.getChatById(groupId);
-        const messages = await chat.fetchMessages({ limit: 500 });
-        for (const m of messages) {
-          if (m.body?.toLowerCase().includes(lowerQuery)) {
-            results.push(await this.messageToEntry(m));
-            if (results.length >= limit) break;
-          }
-        }
-      } else {
-        // Cross-group search — all calls already serialized by outer mutex
-        const chats = await this.client.getChats();
-        const groupChats = chats.filter((c: Chat): c is GroupChat => c.isGroup);
+    const entries = this.buffer.search(query, groupId, limit);
 
-        for (const group of groupChats) {
-          if (results.length >= limit) break;
+    const results: WhatsAppMessageEntry[] = entries.map((e) => ({
+      id: e.id,
+      body: e.body,
+      author: e.author,
+      authorName: e.authorName,
+      timestamp: e.timestamp,
+      hasMedia: e.hasMedia,
+      isForwarded: e.isForwarded,
+      quotedMsg: e.quotedMsg,
+    }));
 
-          try {
-            const messages = await group.fetchMessages({ limit: 200 });
-            for (const m of messages) {
-              if (m.body?.toLowerCase().includes(lowerQuery)) {
-                results.push(await this.messageToEntry(m));
-                if (results.length >= limit) break;
-              }
-            }
-          } catch (err) {
-            log('warn', `Failed to search group "${group.name}".`, err);
-          }
-        }
-      }
-
-      log('info', `searchMessages: returning ${results.length} results`);
-      return results;
-    });
+    log('info', `searchMessages: returning ${results.length} results`);
+    return results;
   }
 
   // -----------------------------------------------------------------------
@@ -355,30 +472,25 @@ export class WhatsAppClient {
 
   async exportChat(groupId: string, limit = 500): Promise<string> {
     this.ensureReady();
-    return this.mutex.run(async () => {
-      log('info', `exportChat: groupId=${groupId}, limit=${limit}`);
-      const chat = await this.getChatById(groupId);
-      const messages = await chat.fetchMessages({ limit });
+    log('info', `exportChat: groupId=${groupId}, limit=${limit}`);
 
-      const lines: string[] = [];
+    const entries = this.buffer.get(groupId, limit);
+    const lines: string[] = [];
 
-      for (const m of messages) {
-        const authorName = await this.resolveAuthorName(m);
-        const date = new Date(m.timestamp * 1000);
-        const dateStr = format(date, 'dd/MM/yyyy, HH:mm:ss');
-        const body = m.hasMedia ? '<Media omitted>' : (m.body || '');
+    for (const e of entries) {
+      const date = new Date(e.timestamp * 1000);
+      const dateStr = format(date, 'dd/MM/yyyy, HH:mm:ss');
+      const body = e.hasMedia ? '<Media omitted>' : (e.body || '');
 
-        const bodyLines = body.split('\n');
-        const firstLine = `[${dateStr}] ${authorName}: ${bodyLines[0]}`;
-        lines.push(firstLine);
-        for (let i = 1; i < bodyLines.length; i++) {
-          lines.push(bodyLines[i]);
-        }
+      const bodyLines = body.split('\n');
+      lines.push(`[${dateStr}] ${e.authorName}: ${bodyLines[0]}`);
+      for (let i = 1; i < bodyLines.length; i++) {
+        lines.push(bodyLines[i]);
       }
+    }
 
-      log('info', `exportChat: returning ${lines.length} lines`);
-      return lines.join('\n');
-    });
+    log('info', `exportChat: returning ${lines.length} lines`);
+    return lines.join('\n');
   }
 
   // -----------------------------------------------------------------------
@@ -392,93 +504,144 @@ export class WhatsAppClient {
   ): Promise<{ id: string; timestamp: number }> {
     this.ensureReady();
     return this.mutex.run(async () => {
-      log('info', `sendMessage: chatId=${chatId}, quotedMessageId=${quotedMessageId ?? 'none'}, text="${text.slice(0, 80)}..."`);
-      const chat = await this.getChatById(chatId);
+      log(
+        'info',
+        `sendMessage: chatId=${chatId}, quotedMessageId=${quotedMessageId ?? 'none'}`,
+      );
 
-      const options: Record<string, unknown> = {};
+      const options: any = {};
       if (quotedMessageId) {
-        options.quotedMessageId = quotedMessageId;
+        const quotedEntry = this.buffer.findById(quotedMessageId);
+        if (quotedEntry?.waKey) {
+          options.quoted = {
+            key: quotedEntry.waKey,
+            message: quotedEntry.waMessage,
+            messageTimestamp: quotedEntry.timestamp,
+          } as WAMessage;
+        } else {
+          log('warn', `sendMessage: quoted message ${quotedMessageId} not in buffer`);
+        }
       }
 
-      const sent = await chat.sendMessage(text, options);
-      log('info', `sendMessage: sent id=${sent.id._serialized}`);
+      const sent = await this.sock!.sendMessage(chatId, { text }, options);
+      const msgId = sent?.key?.id || '';
+      const timestamp =
+        typeof sent?.messageTimestamp === 'number'
+          ? sent.messageTimestamp
+          : Number(sent?.messageTimestamp) || Math.floor(Date.now() / 1000);
 
-      return {
-        id: sent.id._serialized,
-        timestamp: sent.timestamp,
-      };
+      if (sent) {
+        const entry = this.waMessageToEntry(sent);
+        if (entry) this.buffer.upsert(chatId, [entry]);
+      }
+
+      log('info', `sendMessage: sent id=${msgId}`);
+      return { id: msgId, timestamp };
     });
   }
 
   // -----------------------------------------------------------------------
-  // Private helpers
+  // Private — event handlers
   // -----------------------------------------------------------------------
 
   private registerEventHandlers(): void {
-    this.client.on('qr', (qr: string) => {
-      log('info', 'QR code received. Scan with your phone:');
-      qrcode.generate(qr, { small: true }, (output: string) => {
-        process.stderr.write(output + '\n');
-      });
+    if (!this.sock) return;
+
+    this.sock.ev.on('messages.upsert', ({ messages }) => {
+      for (const msg of messages) {
+        const jid = msg.key.remoteJid;
+        if (jid) {
+          const entry = this.waMessageToEntry(msg);
+          if (entry) this.buffer.upsert(jid, [entry]);
+        }
+      }
     });
 
-    this.client.on('authenticated', () => {
-      log('info', 'WhatsApp authentication successful.');
+    this.sock.ev.on(
+      'messaging-history.set',
+      ({ messages, contacts: histContacts, isLatest }) => {
+        log('info', `messaging-history.set: ${messages.length} msgs, isLatest=${isLatest}`);
+        for (const c of histContacts) {
+          const name = (c as any).notify || (c as any).name || '';
+          if (name && c.id) this.contacts.set(c.id, name);
+        }
+        for (const msg of messages) {
+          const jid = msg.key.remoteJid;
+          if (jid) {
+            const entry = this.waMessageToEntry(msg);
+            if (entry) this.buffer.upsert(jid, [entry]);
+          }
+        }
+        if (isLatest) {
+          this.bufferWarm = true;
+          if (this.connectionOpen) this.tryMarkReady();
+        }
+      },
+    );
+
+    this.sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+      if (connection === 'open') {
+        log('info', 'Connection open');
+        this.connectionOpen = true;
+        if (this.bufferWarm) this.tryMarkReady();
+      } else if (connection === 'close') {
+        this.connectionOpen = false;
+        this.ready = false;
+        if (this.destroying) return;
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+        if (statusCode === DisconnectReason.loggedOut) {
+          log('error', 'Logged out — exiting hard');
+          setTimeout(() => process.exit(1), 50);
+        } else {
+          log('warn', `Connection closed (statusCode=${statusCode}), reconnecting in 3s`);
+          setTimeout(() => {
+            if (!this.destroying) {
+              this.createSocket().catch((err) =>
+                log('error', 'Reconnect failed', err),
+              );
+            }
+          }, 3000);
+        }
+      }
     });
 
-    this.client.on('auth_failure', (msg: string) => {
-      log('error', 'WhatsApp authentication failure.', msg);
-      this.ready = false;
+    this.sock.ev.on('contacts.upsert', (contacts) => {
+      for (const c of contacts) {
+        const name = (c as any).notify || (c as any).name || '';
+        if (name && c.id) this.contacts.set(c.id, name);
+      }
     });
 
-    this.client.on('ready', () => {
-      log('info', 'WhatsApp client is ready.');
-      this.ready = true;
-    });
-
-    this.client.on('disconnected', (reason: string) => {
-      log('warn', `WhatsApp client disconnected: ${reason}`);
-      this.ready = false;
+    this.sock.ev.on('contacts.update', (updates) => {
+      for (const u of updates) {
+        const name = (u as any).notify || (u as any).name;
+        if (name && u.id) this.contacts.set(u.id, name);
+      }
     });
   }
 
-  private connectWithTimeout(timeoutMs: number): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
+  private tryMarkReady(): void {
+    if (this.ready) return;
+    this.ready = true;
+    if (this.readyResolve) {
+      this.readyResolve();
+      this.readyResolve = null;
+    }
+  }
 
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          reject(new Error(`WhatsApp client initialization timed out after ${timeoutMs}ms`));
+  private waitForReady(): Promise<void> {
+    if (this.ready) return Promise.resolve();
+
+    return new Promise<void>((resolve) => {
+      this.readyResolve = resolve;
+      setTimeout(() => {
+        if (!this.ready) {
+          log('warn', 'Ready timeout (30s) — proceeding with current buffer state');
+          this.bufferWarm = true;
+          this.connectionOpen = true;
+          this.tryMarkReady();
         }
-      }, timeoutMs);
-
-      const onReady = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          resolve();
-        }
-      };
-
-      const onAuthFailure = (msg: string) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          reject(new Error(`Authentication failed: ${msg}`));
-        }
-      };
-
-      this.client.once('ready', onReady);
-      this.client.once('auth_failure', onAuthFailure);
-
-      this.client.initialize().catch((err) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        }
-      });
+      }, 30_000);
     });
   }
 
@@ -490,47 +653,97 @@ export class WhatsAppClient {
     }
   }
 
-  private async getChatById(chatId: string): Promise<Chat> {
-    try {
-      return await this.client.getChatById(chatId);
-    } catch (err) {
-      throw new Error(`Chat not found: ${chatId}. ${String(err)}`);
-    }
-  }
+  // -----------------------------------------------------------------------
+  // Private — message conversion
+  // -----------------------------------------------------------------------
 
-  private async resolveAuthorName(msg: Message): Promise<string> {
-    try {
-      const contact: Contact = await msg.getContact();
-      return contact.pushname || contact.name || contact.number || msg.author || 'Unknown';
-    } catch {
-      return msg.author || 'Unknown';
-    }
-  }
+  private waMessageToEntry(msg: WAMessage): BufferEntry | null {
+    if (!msg.key.remoteJid || !msg.message) return null;
 
-  private async messageToEntry(msg: Message): Promise<WhatsAppMessageEntry> {
-    const authorName = await this.resolveAuthorName(msg);
+    const body = this.extractBody(msg);
+    const hasMedia = this.checkMedia(msg);
 
-    let quotedMsg: WhatsAppMessageEntry['quotedMsg'] | undefined;
-    if (msg.hasQuotedMsg) {
-      try {
-        const quoted = await msg.getQuotedMessage();
-        const quotedAuthor = await this.resolveAuthorName(quoted);
-        quotedMsg = { body: quoted.body, author: quotedAuthor };
-      } catch {
-        // quoted message may have been deleted
-      }
+    if (!body && !hasMedia) return null;
+
+    const contextInfo = this.extractContextInfo(msg);
+
+    let quotedMsg: { body: string; author: string } | undefined;
+    if (contextInfo?.quotedMessage) {
+      quotedMsg = {
+        body:
+          contextInfo.quotedMessage.conversation ||
+          contextInfo.quotedMessage.extendedTextMessage?.text ||
+          '',
+        author: contextInfo.participant || '',
+      };
     }
+
+    const timestamp =
+      typeof msg.messageTimestamp === 'number'
+        ? msg.messageTimestamp
+        : Number(msg.messageTimestamp) || 0;
 
     return {
-      id: msg.id._serialized,
-      body: msg.body || '',
-      author: msg.author || msg.from || '',
-      authorName,
-      timestamp: msg.timestamp,
-      hasMedia: msg.hasMedia,
-      isForwarded: (msg as any).isForwarded ?? false,
+      id: msg.key.id || '',
+      body,
+      author: msg.key.participant || msg.key.remoteJid || '',
+      authorName: this.resolveAuthorName(msg),
+      timestamp,
+      hasMedia,
+      isForwarded: !!contextInfo?.isForwarded,
+      fromMe: msg.key.fromMe || false,
       quotedMsg,
+      waKey: msg.key,
+      waMessage: msg.message,
     };
+  }
+
+  private resolveAuthorName(msg: WAMessage): string {
+    if (msg.pushName) return msg.pushName;
+    if (msg.key.fromMe) return this.sock?.user?.name || 'Me';
+    const jid = msg.key.participant || msg.key.remoteJid || '';
+    return this.contacts.get(jid) || jid.replace(/@.*/, '') || 'Unknown';
+  }
+
+  private extractBody(msg: WAMessage): string {
+    const m = msg.message;
+    if (!m) return '';
+    return (
+      m.conversation ||
+      m.extendedTextMessage?.text ||
+      m.imageMessage?.caption ||
+      m.videoMessage?.caption ||
+      m.documentMessage?.caption ||
+      m.listResponseMessage?.title ||
+      m.buttonsResponseMessage?.selectedDisplayText ||
+      m.templateButtonReplyMessage?.selectedDisplayText ||
+      ''
+    );
+  }
+
+  private checkMedia(msg: WAMessage): boolean {
+    const m = msg.message;
+    if (!m) return false;
+    return !!(
+      m.imageMessage ||
+      m.videoMessage ||
+      m.audioMessage ||
+      m.documentMessage ||
+      m.stickerMessage
+    );
+  }
+
+  private extractContextInfo(msg: WAMessage): any {
+    const m = msg.message;
+    if (!m) return null;
+    return (
+      m.extendedTextMessage?.contextInfo ||
+      m.imageMessage?.contextInfo ||
+      m.videoMessage?.contextInfo ||
+      m.audioMessage?.contextInfo ||
+      m.documentMessage?.contextInfo ||
+      null
+    );
   }
 }
 
