@@ -48,61 +48,111 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n];
 }
 
-async function resolveGroup(
+type ResolveResult =
+  | { kind: 'ok'; group: WhatsAppGroup }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; matches: WhatsAppGroup[] };
+
+export function looksLikeJid(input: string): boolean {
+  return /@g\.us$/i.test(input.trim());
+}
+
+// Among same-name matches, prefer the one live group. A subject can collide
+// across the live group, a Community parent, and migrated shells, but only the
+// live group carries buffered activity. Resolve to it when it is unique; refuse
+// only when two or more candidates are genuinely active.
+function preferActive(matches: WhatsAppGroup[]): ResolveResult {
+  const active = matches.filter((g) => g.lastActivityTimestamp > 0);
+  if (active.length === 1) return { kind: 'ok', group: active[0] };
+  return { kind: 'ambiguous', matches };
+}
+
+export async function resolveGroup(
   client: WhatsAppClient,
   groupName: string,
-): Promise<WhatsAppGroup | null> {
+): Promise<ResolveResult> {
   const groups = await client.getGroups();
-  const needle = normalize(groupName);
 
-  // 1. Exact match (after normalization)
-  const exact = groups.find((g) => normalize(g.name) === needle);
-  if (exact) return exact;
-
-  // 2. Substring includes
-  const includes = groups.filter((g) => normalize(g.name).includes(needle));
-  if (includes.length === 1) return includes[0];
-  if (includes.length > 1) {
-    includes.sort((a, b) => a.name.length - b.name.length);
-    return includes[0];
+  // 0. Exact JID — the stable, unambiguous path. The daily brief and any
+  //    caller addressing a non-unique name should pass the JID directly.
+  if (looksLikeJid(groupName)) {
+    const byJid = groups.find((g) => g.id === groupName.trim());
+    return byJid ? { kind: 'ok', group: byJid } : { kind: 'none' };
   }
 
-  // 3. Levenshtein distance < 3
+  const needle = normalize(groupName);
+
+  // 1. Exact name (normalized). On a collision, prefer the single live group;
+  //    refuse only when two or more candidates are genuinely active.
+  const exact = groups.filter((g) => normalize(g.name) === needle);
+  if (exact.length === 1) return { kind: 'ok', group: exact[0] };
+  if (exact.length > 1) return preferActive(exact);
+
+  // 2. Substring includes. Same rule: prefer the single live match.
+  const includes = groups.filter((g) => normalize(g.name).includes(needle));
+  if (includes.length === 1) return { kind: 'ok', group: includes[0] };
+  if (includes.length > 1) return preferActive(includes);
+
+  // 3. Levenshtein < 3 (typo tolerance) — only when nothing else matched, and
+  //    only when the closest match is unique.
   let bestMatch: WhatsAppGroup | null = null;
   let bestDistance = Infinity;
-
+  let bestIsTied = false;
   for (const group of groups) {
     const distance = levenshtein(normalize(group.name), needle);
     if (distance < bestDistance) {
       bestDistance = distance;
       bestMatch = group;
+      bestIsTied = false;
+    } else if (distance === bestDistance) {
+      bestIsTied = true;
     }
   }
+  if (bestDistance < 3 && bestMatch && !bestIsTied) {
+    return { kind: 'ok', group: bestMatch };
+  }
 
-  if (bestDistance < 3 && bestMatch) return bestMatch;
-
-  return null;
+  return { kind: 'none' };
 }
 
-async function resolveGroupOrError(
+function describeCandidate(g: WhatsAppGroup): string {
+  const last = g.lastActivityTimestamp
+    ? new Date(g.lastActivityTimestamp * 1000).toISOString()
+    : 'no recent activity';
+  return `  - "${g.name}" — jid: ${g.id} — ${g.memberCount} members — last active: ${last}`;
+}
+
+export async function resolveGroupOrError(
   client: WhatsAppClient,
   groupName: string,
 ): Promise<
   | { group: WhatsAppGroup; error?: undefined }
   | { group?: undefined; error: { type: 'text'; text: string } }
 > {
-  const group = await resolveGroup(client, groupName);
-  if (!group) {
-    const groups = await client.getGroups();
-    const available = groups.map((g) => g.name).join(', ');
+  const res = await resolveGroup(client, groupName);
+
+  if (res.kind === 'ok') return { group: res.group };
+
+  if (res.kind === 'ambiguous') {
+    const list = res.matches.map(describeCandidate).join('\n');
     return {
       error: {
         type: 'text' as const,
-        text: `No group found matching "${groupName}". Available groups: ${available}`,
+        text:
+          `"${groupName}" matches ${res.matches.length} groups — refusing to ` +
+          `guess which one. Re-call with the exact JID as groupName:\n${list}`,
       },
     };
   }
-  return { group };
+
+  const groups = await client.getGroups();
+  const available = groups.map((g) => g.name).join(', ');
+  return {
+    error: {
+      type: 'text' as const,
+      text: `No group found matching "${groupName}". Available groups: ${available}`,
+    },
+  };
 }
 
 // ── Tool Registration ───────────────────────────────────────────────────────
@@ -129,7 +179,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           properties: {
             groupName: {
               type: 'string',
-              description: 'Name of the group (fuzzy-matched)',
+              description: 'Group name (fuzzy-matched) or exact group JID (e.g. 12036...@g.us). If the name matches multiple groups, the call fails and returns the JIDs to disambiguate.',
             },
             limit: {
               type: 'number',
@@ -157,7 +207,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           properties: {
             groupName: {
               type: 'string',
-              description: 'Name of the group (fuzzy-matched)',
+              description: 'Group name (fuzzy-matched) or exact group JID (e.g. 12036...@g.us). If the name matches multiple groups, the call fails and returns the JIDs to disambiguate.',
             },
             limit: {
               type: 'number',
@@ -201,7 +251,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           properties: {
             groupName: {
               type: 'string',
-              description: 'Name of the group (fuzzy-matched)',
+              description: 'Group name (fuzzy-matched) or exact group JID (e.g. 12036...@g.us). If the name matches multiple groups, the call fails and returns the JIDs to disambiguate.',
             },
           },
           required: ['groupName'],
@@ -210,13 +260,13 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       {
         name: 'whatsapp_send_message',
         description:
-          'Send a message to a WhatsApp group.',
+          'Send a message to a WhatsApp group, addressed by name or exact JID. If the name matches more than one group, the send is refused and the matching JIDs are returned instead of guessing.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             groupName: {
               type: 'string',
-              description: 'Name of the group (fuzzy-matched)',
+              description: 'Group name (fuzzy-matched) or exact group JID (e.g. 12036...@g.us). If the name matches multiple groups, the call fails and returns the JIDs to disambiguate.',
             },
             message: {
               type: 'string',
@@ -235,7 +285,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
           properties: {
             groupName: {
               type: 'string',
-              description: 'Name of the group (fuzzy-matched)',
+              description: 'Group name (fuzzy-matched) or exact group JID (e.g. 12036...@g.us). If the name matches multiple groups, the call fails and returns the JIDs to disambiguate.',
             },
             messageId: {
               type: 'string',
@@ -273,7 +323,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
               const preview = g.lastMessage
                 ? g.lastMessage.slice(0, 80)
                 : '(no messages)';
-              return `${i + 1}. ${g.name} (${g.memberCount} members)\n   Last active: ${date}\n   Last message: ${preview}`;
+              return `${i + 1}. ${g.name} (${g.memberCount} members)\n   JID: ${g.id}\n   Last active: ${date}\n   Last message: ${preview}`;
             })
             .join('\n\n');
 
@@ -371,6 +421,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
 
           const text = [
             `Group: ${info.name}`,
+            `JID: ${info.id}`,
             `Description: ${info.description || '(none)'}`,
             `Created: ${created}`,
             `Total participants: ${info.participants.length}`,

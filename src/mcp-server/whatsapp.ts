@@ -274,6 +274,34 @@ class MessageBuffer {
 }
 
 // ---------------------------------------------------------------------------
+// Group list hygiene — pure, exported for unit testing
+//
+// groupFetchAllParticipating() can surface more than one JID with the same
+// subject: the live group, a Community parent/announce shell, and stale or
+// migrated JIDs left behind after a group upgrade. Those orphans show up with
+// a single participant (just you) and no buffered activity. Dedupe by JID and
+// drop the degenerate (<2 member) entries so name resolution and the daily
+// brief are never fed phantom groups. Real targeting is by JID — see
+// resolveGroup in tools.ts.
+// ---------------------------------------------------------------------------
+
+export function dedupeAndFilterGroups(
+  summaries: WhatsAppGroupSummary[],
+): WhatsAppGroupSummary[] {
+  const byJid = new Map<string, WhatsAppGroupSummary>();
+  for (const s of summaries) {
+    if (s.memberCount < 2) continue; // orphaned / migrated JID — never a real target
+    const existing = byJid.get(s.id);
+    if (!existing || s.lastActivityTimestamp > existing.lastActivityTimestamp) {
+      byJid.set(s.id, s);
+    }
+  }
+  return [...byJid.values()].sort(
+    (a, b) => b.lastActivityTimestamp - a.lastActivityTimestamp,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // WhatsAppClient — Baileys WebSocket client
 // ---------------------------------------------------------------------------
 
@@ -380,9 +408,13 @@ export class WhatsAppClient {
         },
       );
 
-      summaries.sort((a, b) => b.lastActivityTimestamp - a.lastActivityTimestamp);
-      log('info', `getGroups: returning ${summaries.length} groups`);
-      return summaries;
+      const filtered = dedupeAndFilterGroups(summaries);
+      log(
+        'info',
+        `getGroups: returning ${filtered.length} groups ` +
+          `(${summaries.length - filtered.length} phantom/duplicate entries filtered)`,
+      );
+      return filtered;
     });
   }
 
