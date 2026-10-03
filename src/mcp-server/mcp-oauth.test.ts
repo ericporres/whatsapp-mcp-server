@@ -198,9 +198,11 @@ describe('hardening', () => {
     expect(res.status).toBe(400);
   });
   it('caps pending authorization codes', async () => {
-    const results = await Promise.all(Array.from({ length: 150 }, () => authorize(pkce().challenge)));
-    expect(results.some((r) => r.status === 429)).toBe(true);
-    expect(results.filter((r) => r.status === 302).length).toBeLessThanOrEqual(100);
+    // Sequential: 150 parallel connections trip macOS socket limits (fetch failed).
+    const statuses: number[] = [];
+    for (let i = 0; i < 150; i++) statuses.push((await authorize(pkce().challenge)).status);
+    expect(statuses).toContain(429);
+    expect(statuses.filter((s) => s === 302).length).toBeLessThanOrEqual(100);
   });
 });
 
