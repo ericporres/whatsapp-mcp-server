@@ -74,6 +74,8 @@ A **readiness gate** keeps this honest. Tool calls return `503 Service Unavailab
 - Node.js 22+
 - A WhatsApp account (pairs via QR code on first run)
 
+> **Upgrading from an earlier version:** the server now runs [Baileys](https://github.com/WhiskeySockets/Baileys) 7, the release npm installs by default (6.x is the `legacy` line). Run `npm install` after pulling. If an existing session can't reconnect after the upgrade, stop the server, remove its `.baileys_auth*` directory, and pair again.
+
 ### Install and Build
 
 ```bash

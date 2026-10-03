@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-mcp-server",
   "version": "1.0.0",
-  "description": "WhatsApp/Signal Group Chat Intelligence — MCP server + analysis pipeline",
+  "description": "WhatsApp/Signal Group Chat Intelligence \u2014 MCP server + analysis pipeline",
   "type": "module",
   "main": "dist/mcp-server/index.js",
   "scripts": {
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@whiskeysockets/baileys": "^6.7.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "date-fns": "^3.6.0",
     "pino": "^9.0.0",
     "qrcode-terminal": "^0.12.0",
@@ -27,5 +27,8 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",
     "vitest": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
