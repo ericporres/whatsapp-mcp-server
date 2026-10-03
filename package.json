@@ -9,6 +9,7 @@
     "dev": "tsx watch src/mcp-server/index.ts",
     "mcp:start": "tsx src/mcp-server/index.ts",
     "mcp:http": "tsx src/mcp-server/http-server.ts",
+    "oauth:generate": "node dist/mcp-server/mcp-oauth.js --generate .mcp-credentials.json",
     "test": "vitest run",
     "watch": "tsx scripts/watch-exports.ts"
   },

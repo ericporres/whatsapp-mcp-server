@@ -133,32 +133,52 @@ cloudflared tunnel run your-tunnel-name
 
 ### Securing the Tunnel
 
-The server runs locally — your machine, your data, your paired WhatsApp session. But exposing it via a Cloudflare tunnel creates a public HTTPS endpoint. You should lock it down.
+The server runs locally — your machine, your data, your paired WhatsApp session. Exposing it through a tunnel creates a public HTTPS endpoint that can read and send messages as you. **Turn on OAuth before you expose it.**
 
-**Security tiers** (pick your comfort level):
+The HTTP server ships with a built-in OAuth 2.1 authorization server (Authorization Code + PKCE, refresh-token rotation). It is single-user: one client ID and secret, generated locally, stored in a file git ignores.
 
-| Tier | What It Does | Effort | Notes |
-|------|-------------|--------|-------|
-| **Obscurity** (default) | Long random subdomain — `mcp-random-words-123.yourdomain.com` | Zero — automatic | Treat the URL like a password |
-| **IP Restriction** | Cloudflare Access policy allows only your IP | 5 min in [Zero Trust dashboard](https://one.dash.cloudflare.com/) | **See caveat below** |
-| **Bearer Token** | Server validates `Authorization` header on every request | ~20 lines in `http-server.ts` | Requires client support for custom headers |
-| **Email OTP** | Cloudflare Access sends a one-time code to your email | 10 min in Zero Trust dashboard | Works if your client handles browser auth flows |
-| **OAuth/OIDC** (recommended for remote) | Full identity provider integration (Google, Okta, etc.) | 30 min — identity provider config | Best option for cloud-hosted MCP clients |
+```bash
+npm run build
+npm run oauth:generate            # writes .mcp-credentials.json (mode 0600)
 
-> **Important caveat about IP restriction:** Cloudflare Access IP whitelisting works well for clients that connect from your local machine (like Claude Code via stdio). However, cloud-hosted MCP clients — including Claude Cowork, and potentially other platforms that proxy MCP connections through their own infrastructure — connect from the *platform's* IP addresses, not yours. An IP whitelist locked to your home network will block these clients. I learned this the hard way: the tunnel was healthy, the server was running, and Cloudflare was dutifully rejecting every legitimate request from the desktop app I built this for.
+MCP_HTTP_PORT=<your-port> \
+MCP_PUBLIC_URL=https://<your-tunnel-hostname> \
+node dist/mcp-server/http-server.js
+```
 
-**For local-only access (Claude Code, stdio):** Obscurity alone is sufficient — the tunnel isn't even needed since stdio is a direct pipe.
+Then add the server in your MCP client as `https://<your-tunnel-hostname>/mcp` with the `client_id` and `client_secret` from `.mcp-credentials.json`. The client discovers `/.well-known/oauth-authorization-server`, runs the PKCE flow, and sends `Authorization: Bearer <token>` on every `/mcp` request. Requests without a valid token get `401`.
 
-**For remote access (Cowork, Cursor, HTTP clients):** Obscurity is the practical baseline today. The random subdomain is effectively unguessable, and your tunnel URL should never appear in public repos, articles, or documentation. For stronger security, **OAuth/OIDC is the recommended path** — it's the only auth mechanism that both Cloudflare Access and cloud-hosted MCP clients (like Cowork's custom connector) natively support. Bearer tokens require custom HTTP headers, which not all MCP client UIs expose.
+How the server decides:
 
-For bearer token authentication, set `MCP_AUTH_TOKEN` in your environment and the HTTP server will validate the `Authorization: Bearer <token>` header on every request. See `http-server.ts` for implementation. Note: this requires your MCP client to support custom request headers.
+| `.mcp-credentials.json` | `MCP_PUBLIC_URL` | Result |
+|---|---|---|
+| present | set | OAuth enforced on `/mcp` |
+| present | unset | refuses to start (the issuer URL is required) |
+| absent | set | refuses to start (a public URL with no auth would be open) |
+| absent | unset | refuses to start, unless `MCP_ALLOW_NO_AUTH=1` |
+
+`MCP_ALLOW_NO_AUTH=1` runs `/mcp` with no authentication. The server can't tell whether a tunnel forwards to its port, so this is opt-in and meant for local testing only. Never set it on a machine with a tunnel pointed at the server.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_PUBLIC_URL` (alias `MCP_TUNNEL_URL`) | — | HTTPS origin clients use; the OAuth issuer |
+| `MCP_OAUTH_CREDENTIALS` | `<package root>/.mcp-credentials.json` | Credentials file location |
+| `MCP_ALLOW_NO_AUTH` | unset | `1` to run without OAuth (local testing only) |
+
+Issued tokens persist to `.mcp-token-store.json` (mode 0600) next to the credentials, so restarts don't force a re-login. Access tokens last 1 hour. Refresh tokens last 24 hours and rotate on use, so a client that refreshes at least daily stays signed in; using a refresh token revokes the access token issued with it. To rotate the secret, stop the server, delete both files, generate again, and update your client.
+
+Keep your tunnel hostname out of public repos, articles, and screenshots anyway. You can layer Cloudflare Access on top, with one caveat: cloud-hosted MCP clients (Claude Cowork among them) connect from the *platform's* IP addresses, not yours, so an IP allowlist tied to your home network blocks them. I learned this the hard way: the tunnel was healthy, the server was running, and Cloudflare was dutifully rejecting every legitimate request from the desktop app I built this for.
+
+`/authorize` accepts any `https` redirect URI (or `http` on localhost), because MCP clients register their own callbacks. The authorization code it returns is worthless without the client secret, but the endpoint can still bounce a browser to an arbitrary site from your hostname.
+
+**Local-only use (Claude Code over stdio)** needs none of this — stdio is a direct pipe and opens no port.
 
 ### macOS Persistence (LaunchAgents)
 
 For always-on operation — server starts at login, tunnel reconnects automatically, logs to `~/Library/Logs/`:
 
 ```bash
-# Edit the variables at the top of the script first (SESSION_NAME, MCP_PORT, TUNNEL_TOKEN)
+# Edit the variables at the top of the script first (SESSION_NAME, MCP_PORT, TUNNEL_TOKEN, PUBLIC_URL)
 chmod +x scripts/setup-persistence.sh
 ./scripts/setup-persistence.sh
 ```
@@ -210,6 +230,7 @@ src/
 ├── mcp-server/
 │   ├── index.ts          # Stdio transport (Claude Code)
 │   ├── http-server.ts    # StreamableHTTP transport (Cowork + tunnel)
+│   ├── mcp-oauth.ts      # OAuth 2.1 + PKCE authorization server for the HTTP transport
 │   ├── tools.ts          # MCP tool definitions + fuzzy group matching
 │   ├── types.ts          # Zod schemas for tool inputs
 │   └── whatsapp.ts       # Baileys client wrapper + ring buffer + mutex

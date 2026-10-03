@@ -18,11 +18,26 @@ HOME_DIR="$HOME"
 SESSION_NAME="default"
 MCP_PORT=""      # Any free high port on your machine. Required.
 TUNNEL_TOKEN=""  # Leave empty to skip tunnel setup
+PUBLIC_URL=""    # Your tunnel's https:// origin. Required with TUNNEL_TOKEN (enables OAuth).
 LABEL_PREFIX="com.$(whoami)"
 
 if [[ -z "$MCP_PORT" ]]; then
   echo "ERROR: MCP_PORT is unset. Edit scripts/setup-persistence.sh and set it to any free high port on your machine." >&2
   exit 1
+fi
+
+if [[ -n "$TUNNEL_TOKEN" ]]; then
+  if [[ -z "$PUBLIC_URL" ]]; then
+    echo "ERROR: TUNNEL_TOKEN is set but PUBLIC_URL is empty. A tunnel requires OAuth; set PUBLIC_URL." >&2
+    exit 1
+  fi
+  if [[ ! -f "$PROJECT_DIR/.mcp-credentials.json" ]]; then
+    echo "Generating OAuth credentials at $PROJECT_DIR/.mcp-credentials.json (mode 0600)..."
+    node "$PROJECT_DIR/dist/mcp-server/mcp-oauth.js" --generate "$PROJECT_DIR/.mcp-credentials.json"
+  fi
+  ALLOW_NO_AUTH=""
+else
+  ALLOW_NO_AUTH="1"   # no tunnel: nothing reaches the port but this machine
 fi
 
 # ---------------------------------------------------------------------------
@@ -51,6 +66,8 @@ sed \
   -e "s|__PROJECT__|$PROJECT_DIR|g" \
   -e "s|__SESSION__|$SESSION_NAME|g" \
   -e "s|__PORT__|$MCP_PORT|g" \
+  -e "s|__PUBLIC_URL__|$PUBLIC_URL|g" \
+  -e "s|__ALLOW_NO_AUTH__|$ALLOW_NO_AUTH|g" \
   -e "s|com.yourname.whatsapp-mcp|${LABEL_PREFIX}.whatsapp-mcp|g" \
   config/whatsapp-mcp.plist.template > "$MCP_PLIST"
 

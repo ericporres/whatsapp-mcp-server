@@ -7,6 +7,8 @@
     __PROJECT__  → absolute path to this project
     __SESSION__  → your WhatsApp session name
     __PORT__     → the port you chose for MCP_HTTP_PORT (any free high port)
+    __PUBLIC_URL__ → your tunnel's https:// origin (enables OAuth)
+    __ALLOW_NO_AUTH__ → empty when using a tunnel; 1 only for a no-tunnel, localhost-only setup
 -->
 <plist version="1.0">
 <dict>
@@ -29,6 +31,10 @@
     <string>__SESSION__</string>
     <key>MCP_HTTP_PORT</key>
     <string>__PORT__</string>
+    <key>MCP_PUBLIC_URL</key>
+    <string>__PUBLIC_URL__</string>
+    <key>MCP_ALLOW_NO_AUTH</key>
+    <string>__ALLOW_NO_AUTH__</string>
   </dict>
 
   <key>WorkingDirectory</key>
