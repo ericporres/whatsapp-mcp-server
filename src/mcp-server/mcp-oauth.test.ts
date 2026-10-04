@@ -14,6 +14,7 @@ let server: Server;
 let base: string;
 let creds: { client_id: string; client_secret: string };
 let oauth: McpOAuth;
+const logs: string[] = [];
 
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
@@ -74,7 +75,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  oauth = new McpOAuth({ credentialsPath: credPath, issuerUrl: base, log: () => {} });
+  oauth = new McpOAuth({ credentialsPath: credPath, issuerUrl: base, log: (m) => logs.push(m) });
 });
 
 afterAll(() => {
@@ -203,6 +204,35 @@ describe('hardening', () => {
     for (let i = 0; i < 150; i++) statuses.push((await authorize(pkce().challenge)).status);
     expect(statuses).toContain(429);
     expect(statuses.filter((s) => s === 302).length).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('diagnostics', () => {
+  it('logs why a token request was rejected when no secret was sent', async () => {
+    logs.length = 0;
+    const res = await token({
+      grant_type: 'authorization_code', code: 'x', code_verifier: 'y', redirect_uri: REDIRECT,
+      client_id: creds.client_id,
+    });
+    expect(res.status).toBe(401);
+    const out = logs.join('\n');
+    expect(out).toContain('secret_in_body=false');
+    expect(out).toContain('basic_auth_header=false');
+    expect(out).toContain('invalid_client');
+  });
+
+  it('notes that a secret arrived but never logs its value or the client_id', async () => {
+    logs.length = 0;
+    const wrong = 'f'.repeat(64);
+    await token({
+      grant_type: 'authorization_code', code: 'x', code_verifier: 'y', redirect_uri: REDIRECT,
+      client_id: creds.client_id, client_secret: wrong,
+    });
+    const out = logs.join('\n');
+    expect(out).toContain('secret_in_body=true');
+    expect(out).not.toContain(wrong);
+    expect(out).not.toContain(creds.client_secret);
+    expect(out).not.toContain(creds.client_id);
   });
 });
 

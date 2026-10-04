@@ -352,6 +352,12 @@ export class McpOAuth {
       ? ((await parseJsonBody(req)) as Record<string, string>)
       : await parseFormBody(req);
 
+    // Log how the client authenticated (never the values) so a failed sign-in is diagnosable.
+    this.log(
+      `Token request: grant_type=${body.grant_type ?? '?'} client=${tag(body.client_id ?? '')} ` +
+        `secret_in_body=${Boolean(body.client_secret)} basic_auth_header=${/^basic /i.test(req.headers.authorization ?? '')}`,
+    );
+
     if (!this.validateClient(body.client_id, body.client_secret)) {
       this.tokenError(res, 'invalid_client', 'Invalid client credentials');
       return;
@@ -449,6 +455,7 @@ export class McpOAuth {
   }
 
   private tokenError(res: ServerResponse, error: string, description: string): void {
+    this.log(`Token request rejected: ${error} (${description})`);
     json(res, error === 'invalid_client' ? 401 : 400, { error, error_description: description });
   }
 
