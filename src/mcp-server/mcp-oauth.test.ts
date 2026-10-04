@@ -236,6 +236,16 @@ describe('diagnostics', () => {
   });
 });
 
+describe('log safety', () => {
+  it('does not let grant_type inject log lines', async () => {
+    logs.length = 0;
+    await token({ grant_type: 'authorization_code\nToken request rejected: forged', client_id: creds.client_id });
+    const line = logs.find((l) => l.startsWith('Token request: '))!;
+    expect(line).not.toContain('\n');
+    expect(logs.filter((l) => l.includes('forged') && l.startsWith('Token request rejected'))).toHaveLength(0);
+  });
+});
+
 describe('refresh token grant', () => {
   it('revokes the paired access token on refresh', async () => {
     // Pending-code cap from the previous test: let those codes expire from the map.

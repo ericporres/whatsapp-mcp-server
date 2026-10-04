@@ -169,7 +169,7 @@ How the server decides:
 | absent | set | refuses to start (a public URL with no auth would be open) |
 | absent | unset | refuses to start, unless `MCP_ALLOW_NO_AUTH=1` |
 
-`MCP_ALLOW_NO_AUTH=1` runs `/mcp` with no authentication. The server can't tell whether a tunnel forwards to its port, so this is opt-in and meant for local testing only. Never set it on a machine with a tunnel pointed at the server.
+`MCP_ALLOW_NO_AUTH=1` runs `/mcp` with no authentication. The server can't tell whether a tunnel forwards to its port, so this is opt-in and meant for local testing only. Never set it on a machine with a tunnel pointed at the server. In this mode the server also refuses any request whose `Host` is not loopback and any browser request from a non-loopback `Origin`, and sends CORS headers only to loopback origins.
 
 | Variable | Default | Purpose |
 |---|---|---|

@@ -134,6 +134,12 @@ function json(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(JSON.stringify(body));
 }
 
+/** Client-supplied text for a log line: printable token characters only, capped, so a request can't forge log lines. */
+function logSafe(value: unknown): string {
+  if (typeof value !== 'string' || value === '') return '?';
+  return value.replace(/[^\w:.-]/g, '_').slice(0, 40);
+}
+
 /** Short, non-reversible label for logs. */
 function tag(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 8);
@@ -354,7 +360,7 @@ export class McpOAuth {
 
     // Log how the client authenticated (never the values) so a failed sign-in is diagnosable.
     this.log(
-      `Token request: grant_type=${body.grant_type ?? '?'} client=${tag(body.client_id ?? '')} ` +
+      `Token request: grant_type=${logSafe(body.grant_type)} client=${tag(body.client_id ?? '')} ` +
         `secret_in_body=${Boolean(body.client_secret)} basic_auth_header=${/^basic /i.test(req.headers.authorization ?? '')}`,
     );
 
