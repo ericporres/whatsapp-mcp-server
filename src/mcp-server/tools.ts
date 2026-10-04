@@ -163,6 +163,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
     tools: [
       {
         name: 'whatsapp_list_groups',
+        annotations: { title: 'List groups', readOnlyHint: true, openWorldHint: false },
         description:
           'List all WhatsApp groups the authenticated user belongs to, sorted by most recent activity.',
         inputSchema: {
@@ -173,6 +174,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_get_messages',
+        annotations: { title: 'Get messages', readOnlyHint: true, openWorldHint: false },
         description:
           'Get messages from a WhatsApp group. Supports fuzzy group name matching, message count limit, and date range filtering. ' +
           'Default 200 keeps context small; raise the limit (up to 1500) when a task needs deeper history.',
@@ -202,6 +204,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_export_chat',
+        annotations: { title: 'Export chat', readOnlyHint: true, openWorldHint: false },
         description:
           'Export a WhatsApp group chat as .txt in the same format as WhatsApp built-in export.',
         inputSchema: {
@@ -222,6 +225,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_sync_history',
+        annotations: { title: 'Sync history', readOnlyHint: true, openWorldHint: true },
         description:
           'Backfill older message history for a group from WhatsApp servers (on-demand sync). ' +
           'Walks backwards from the oldest locally-known message, so the group must already have ' +
@@ -245,6 +249,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_search_messages',
+        annotations: { title: 'Search messages', readOnlyHint: true, openWorldHint: false },
         description:
           'Search messages containing a keyword or phrase, optionally scoped to a specific group.',
         inputSchema: {
@@ -269,6 +274,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_group_info',
+        annotations: { title: 'Group info', readOnlyHint: true, openWorldHint: false },
         description:
           'Get detailed metadata about a WhatsApp group including description, participants, and creation date.',
         inputSchema: {
@@ -284,6 +290,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_send_message',
+        annotations: { title: 'Send message', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         description:
           'Send a message to a WhatsApp group, addressed by name or exact JID. If the name matches more than one group, the send is refused and the matching JIDs are returned instead of guessing.',
         inputSchema: {
@@ -303,6 +310,7 @@ export function registerTools(server: Server, client: WhatsAppClient): void {
       },
       {
         name: 'whatsapp_reply_to_message',
+        annotations: { title: 'Reply to message', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         description:
           'Reply to a specific message in a WhatsApp group. The reply will be shown as a quoted reply.',
         inputSchema: {

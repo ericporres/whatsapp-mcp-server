@@ -77,12 +77,20 @@ echo "MCP server LaunchAgent loaded."
 
 # Optionally create tunnel LaunchAgent
 if [[ -n "$TUNNEL_TOKEN" ]]; then
+  # Keep the token out of `ps` and out of the plist: cloudflared reads it from a 0600 file.
+  TOKEN_FILE="$HOME_DIR/.cloudflared/${LABEL_PREFIX}.whatsapp-tunnel.token"
+  mkdir -p "$HOME_DIR/.cloudflared" && chmod 700 "$HOME_DIR/.cloudflared"
+  ( umask 077 && printf '%s' "$TUNNEL_TOKEN" > "$TOKEN_FILE" )
+  chmod 600 "$TOKEN_FILE"
+  echo "Tunnel token written to $TOKEN_FILE (mode 0600)"
+
   echo "Creating tunnel LaunchAgent at $TUNNEL_PLIST"
   sed \
     -e "s|__HOME__|$HOME_DIR|g" \
-    -e "s|__TUNNEL_TOKEN__|$TUNNEL_TOKEN|g" \
+    -e "s|__TUNNEL_TOKEN_FILE__|$TOKEN_FILE|g" \
     -e "s|com.yourname.whatsapp-tunnel|${LABEL_PREFIX}.whatsapp-tunnel|g" \
     config/whatsapp-tunnel.plist.template > "$TUNNEL_PLIST"
+  chmod 600 "$TUNNEL_PLIST"
 
   launchctl unload "$TUNNEL_PLIST" 2>/dev/null || true
   launchctl load "$TUNNEL_PLIST"
