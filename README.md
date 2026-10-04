@@ -244,7 +244,7 @@ chmod +x scripts/setup-persistence.sh
 ./scripts/setup-persistence.sh
 ```
 
-Templates for the LaunchAgent plists are in `config/`. The script substitutes your paths, your chosen port, and your tunnel token, then loads them.
+Templates for the LaunchAgent plists are in `config/`. The script substitutes your paths and chosen port, then loads them. The tunnel token goes into `~/.cloudflared/<label>.whatsapp-tunnel.token` (mode 0600), and `cloudflared` reads it with `--token-file`, so the token never appears in `ps` output or in the plist. If you set up the tunnel with an earlier version of the script, re-run it to move the token out of the plist.
 
 ### Linux Persistence (systemd)
 

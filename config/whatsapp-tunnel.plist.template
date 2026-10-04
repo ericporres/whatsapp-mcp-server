@@ -4,7 +4,9 @@
   macOS LaunchAgent for Cloudflare tunnel → WhatsApp MCP HTTP server.
   Copy to ~/Library/LaunchAgents/ and replace placeholders:
     __HOME__          → your home directory
-    __TUNNEL_TOKEN__  → your cloudflared tunnel token (from `cloudflared tunnel create`)
+    __TUNNEL_TOKEN_FILE__ → path to a mode-0600 file holding your tunnel token.
+                            The token is read from the file, so it never appears in
+                            `ps` output or in this plist.
 -->
 <plist version="1.0">
 <dict>
@@ -16,8 +18,8 @@
     <string>/opt/homebrew/bin/cloudflared</string>
     <string>tunnel</string>
     <string>run</string>
-    <string>--token</string>
-    <string>__TUNNEL_TOKEN__</string>
+    <string>--token-file</string>
+    <string>__TUNNEL_TOKEN_FILE__</string>
   </array>
 
   <key>EnvironmentVariables</key>
