@@ -20,6 +20,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { getWhatsAppClient } from './whatsapp.js';
 import { registerTools } from './tools.js';
 import { McpOAuth } from './mcp-oauth.js';
+import { applyCors } from './cors.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -183,11 +184,8 @@ async function main(): Promise<void> {
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // CORS headers for Cowork / tunnel
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id, mcp-protocol-version');
-    res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id, WWW-Authenticate');
+    // Wildcard CORS only when OAuth protects /mcp; loopback-only without auth.
+    if (!applyCors(req, res, Boolean(oauth))) return;
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
