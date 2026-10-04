@@ -20,6 +20,12 @@ MCP_PORT=""      # Any free high port on your machine. Required.
 TUNNEL_TOKEN=""  # Leave empty to skip tunnel setup
 PUBLIC_URL=""    # Your tunnel's https:// origin. Required with TUNNEL_TOKEN (enables OAuth).
 LABEL_PREFIX="com.$(whoami)"
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"   # absolute path launchd will run; override with NODE_BIN=...
+
+if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
+  echo "ERROR: could not find an executable node (got '$NODE_BIN'). Install Node 22+ or run with NODE_BIN=/path/to/node." >&2
+  exit 1
+fi
 
 if [[ -z "$MCP_PORT" ]]; then
   echo "ERROR: MCP_PORT is unset. Edit scripts/setup-persistence.sh and set it to any free high port on your machine." >&2
@@ -63,6 +69,8 @@ echo "Build complete."
 echo "Creating MCP LaunchAgent at $MCP_PLIST"
 sed \
   -e "s|__HOME__|$HOME_DIR|g" \
+  -e "s|__NODE__|$NODE_BIN|g" \
+  -e "s|__NODE_DIR__|$(dirname "$NODE_BIN")|g" \
   -e "s|__PROJECT__|$PROJECT_DIR|g" \
   -e "s|__SESSION__|$SESSION_NAME|g" \
   -e "s|__PORT__|$MCP_PORT|g" \

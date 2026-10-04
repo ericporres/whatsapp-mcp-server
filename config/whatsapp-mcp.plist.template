@@ -4,6 +4,8 @@
   macOS LaunchAgent for WhatsApp MCP HTTP server.
   Copy to ~/Library/LaunchAgents/ and replace placeholders:
     __HOME__     → your home directory (e.g. /Users/yourname)
+    __NODE__     → absolute path to the node binary (scripts/setup-persistence.sh fills this in)
+    __NODE_DIR__ → the directory containing it, added to PATH
     __PROJECT__  → absolute path to this project
     __SESSION__  → your WhatsApp session name
     __PORT__     → the port you chose for MCP_HTTP_PORT (any free high port)
@@ -17,7 +19,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>__HOME__/.nvm/versions/node/v22.15.0/bin/node</string>
+    <string>__NODE__</string>
     <string>__PROJECT__/dist/mcp-server/http-server.js</string>
   </array>
 
@@ -26,7 +28,7 @@
     <key>HOME</key>
     <string>__HOME__</string>
     <key>PATH</key>
-    <string>__HOME__/.nvm/versions/node/v22.15.0/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>__NODE_DIR__:/usr/local/bin:/usr/bin:/bin</string>
     <key>WHATSAPP_SESSION_NAME</key>
     <string>__SESSION__</string>
     <key>MCP_HTTP_PORT</key>
